@@ -25,10 +25,12 @@
 # if multiple wallpapers were selected, you will be able to select which one
 # should be set as the active wallpaper.
 
-# The wallpaper filenames may not include spaces, nor the pipe character 
+# The wallpaper filenames may not include the pipe character 
 # due to the way $dialog uses the | to separate selections.
 
-version="2.0"
+# The wallpaper filenames may include spaces
+
+version="2.01"
 
 testserver="linuxbbq.org"
 server="linuxbbq.org"
@@ -37,9 +39,8 @@ terminal="x-terminal-emulator -e "
 ## gui information ##
 title_options="--always-print-result --dialog-sep --image=/usr/share/icons/bbqtux2.png"
 titletext="LinuxBBQ Wallpaper Downloader"
-# pingtest has been eliminated - downloading the list of walls replaces it
-# pingtest_failed="Either your Internet connection is not working or the linuxBBQ server is down."
 images_dir="$HOME/Images"
+ 
 
 getter="wget"
 getter_options=" -c "
@@ -48,7 +49,7 @@ dialog_options="$title_options"
 setter="pcmanfm"
 setter_options=" --wallpaper-mode=stretch -w "
 
-function check_missing_commands () {
+check_missing_commands () {
     declare -A missing_commands
     required_commands=( $getter $dialog $setter)
     for command in "${required_commands[@]}"; do
@@ -71,7 +72,7 @@ function check_missing_commands () {
 
 do_all=
 debug=
-function validate_arguments () {
+validate_arguments () {
     while [ "$1" ]; do
         case "$1" in
 	    -a|--all)
@@ -79,6 +80,9 @@ function validate_arguments () {
 	        ;;
 	    -d|--debug)
 	        debug=yes
+                testserver="users.telenet.be/jds1307"
+                wallpaper_text_url="${testserver}/wallpaperlist.txt"
+                server=$testserver
 	        ;;
 	    -h|--help)
 	        cat >&2 <<EOF
@@ -104,17 +108,15 @@ EOF
     return 0
 }
 
-# not used - get_wallpaper_list will serve as connection test
-pingtest () {
-    ## test download server ##
-    pingtest=$(ping -c 1 "$server" 2>&1 | grep unknown)
-    if [[ ! -z "$pingtest" ]]; then {
-        $dialog "$title_options""$titletext" --no-buttons --timeout=2 --text="$pingtest"
-        return 1
-        }
-    else
-        return 0
-    fi
+simple_error_message () {
+    [[ "$1" ]] && {
+        $dialog \
+            $dialog_options \
+            --title="$titletext" \
+            --no-buttons \
+            --timeout=3 \
+            --text="$1"
+    }
 }
 
 declare -a tempfiles
@@ -139,7 +141,7 @@ tempfile () {
             trap "exit 2" 1 2 3 13 15
         fi
         # add TMPFILE to the array of temp files
-        tempfiles[${#tempfiles[@]}]=$TMPFILE
+        tempfiles+=($TMPFILE)
         return 0
     else
         TMPFILE=''
@@ -147,31 +149,37 @@ tempfile () {
     fi
 }
 
-function get_wallpaper_list () {
+get_wallpaper_list () {
     wallpaper_list_file=$1
     if ! wget -c -O "$wallpaper_list_file" "$wallpaper_text_url"; then {
-            $dialog "$title_optionss" --title="$titletext" --no-buttons --timeout=2 \
-                --text="Could not download $wallpaper_text_url."
+            simple_error_message "Could not download $wallpaper_text_url"
             return 1
         }
     fi
     [[ $debug ]] && cat $wallpaper_list_file && wc -l $wallpaper_list_file
-    return 0
+    number_available_walls=$(wc -l $wallpaper_list_file | awk '{print $1}')
+    if (( $number_available_walls == 0 )); then
+        simple_error_message "No wallpapers available on the server"
+        return 1
+    else
+        return 0
+    fi
 }
 
-function select_wallpapers () {
-
-    # debugging
-    [[ $debug ]] && wallpaper_list_file="./wallpaper_list"
-    
+select_wallpapers () {
     # fill all_walls array with all walls available on the server
-    echo $wallpaper_list_file
+    # echo $wallpaper_list_file
     mapfile -t all_walls < <(sort "${wallpaper_list_file}")
-    number_available_walls=${#all_walls[@]}
+    local count=${#all_walls[@]}
+    if  (( $count != $number_available_walls )); then
+        simple_error_message "WARNING: number of available wallpapers is questionable"
+        number_available_walls=$count
+    fi
 
     [[ $debug ]] && printf '%s ' "${all_walls[@]}"
 
-    mapfile -t installed_walls < <(find "$images_dir" -type f -regex '.*\(png\|jpg\)$' -printf '%f\n' | sort  )
+    mapfile -t installed_walls < \
+        <(find "$images_dir" -maxdepth 1 -type f -regex '.*\(png\|jpg\)$' -printf '%f\n' | sort  )
     [[ $debug ]] && printf '%s|' "${installed_walls[@]}" 
     number_installed_walls=${#installed_walls[@]}
 
@@ -189,39 +197,52 @@ function select_wallpapers () {
         selectable_walls=( "${all_walls[@]}" )
     } || {
         # filter all_walls, remove installed ones
-        j=0
-        for ((i = 0 ; i < ${#all_walls[@]}; i++)); do
-            wall=${all_walls[$i]}
-            printf '%d %s\n' $i "$wall"
-            [[ "${aa_installed_walls[$wall]}" ]] || selectable_walls[j++]="$wall" 
+        for wall in "${all_walls[@]}"; do
+            [[ "${aa_installed_walls[$wall]}" ]] || selectable_walls+=("$wall")
         done
 
         [[ $debug ]] && {
             printf 'selectable walls: '
             for wall in  "${selectable_walls[@]}"; do
-                printf '%s ' "$wall"
+                printf '%s\n' "$wall"
             done
             printf '%d selectable walls\n' ${#selectable_walls[@]}
         }
     }
     number_selectable_walls=${#selectable_walls[@]}
 
-    local column=$(printf '%s %d %s' "Select one or more of the " $number_selectable_walls "available wallpapers.")
-    gui_selected_walls=$(for wall in "${selectable_walls[@]}"; do
-        printf '%s\n' "$wall"
-        done |
-    $dialog --list $dialog_options --title="$titletext" --column="$column" --geometry="620x420" --button="gtk-quit:1" --button="gtk-ok:0" --multiple)
-    result=$?
-    (( $result )) && return 1
+    if (( $number_selectable_walls == 0 )); then
+        simple_error_message "No selectable walls found"
+        return 1
+    fi
 
-    # selected_walls is an array of euh... selected walls
-    mapfile -t selected_walls < <(echo "$gui_selected_walls")
-    number_selected_walls=${#selected_walls[@]}
+    while (( $number_selected_walls == 0 )); do
+        local column=$(printf '%s %d %s' \
+            "Select one or more of the " $number_selectable_walls "available wallpapers.")
+        gui_selected_walls=$(for wall in "${selectable_walls[@]}"; do
+        printf '%s\n' "$wall"
+    done |
+    $dialog --list $dialog_options \
+        --title="$titletext" \
+        --column="$column" \
+        --geometry="620x420" \
+        --button="gtk-quit:1" \
+        --button="gtk-ok:0" \
+        --multiple \
+        )
+        result=$?
+        (( $result )) && return 1
+
+        [[  $gui_selected_walls ]] && {
+            mapfile -t selected_walls <<<"$gui_selected_walls"
+            number_selected_walls=${#selected_walls[@]}
+        }
+    done
     [[ $debug ]] &&
     for wall in "${selected_walls[@]}"; do
         printf '%s ' "$wall"
     done
-
+    
     # create the list with url's to download
     wget_urls=$(
         for wall in "${selected_walls[@]}"; do
@@ -236,7 +257,7 @@ function select_wallpapers () {
     YPID=$!
 
     tempfile || {
-        $dialog "$title_options" --title="$titletext" --no-buttons --timeout=2 --text="Could not create temp file."
+        simple_error_message "Could not create temp file."
         return 1
     }
     wget_logfile=$TMPFILE
@@ -253,18 +274,30 @@ function select_wallpapers () {
     if (( $status == 0 )); then
         local text="All requested wallpapers have been downloaded to your $images_dir directory."
         $dialog $dialog_options --title="$titletext" --button="gtk-ok:0" --timeout=20 --text="$text"
+        return 0
     else
-        text="Some requested wallpapers could not be downloaded to your $images_dir directory. Do you want to see the wget logfile?"
-        $dialog $dialog_options --title="$titletext" --button="gtk-ok:0" --timeout=20 --text="$text"
-        (( $result == 0 )) && {
+        text="Some requested wallpapers could not be downloaded to your $images_dir directory. \
+Do you want to see the wget logfile?"
+        $dialog \
+            $dialog_options \
+            --title="$titletext" \
+            --button="gtk-ok:0" \
+            --button="gtk-cancel:1" \
+            --timeout=20 \
+            --text="$text"
+        status=$?
+        if (( $status == 0 )); then {
             cat "$wget_logfile" |
             $dialog --list $dialog_options --title="$titletext" --button="gtk-ok:0" --button="gtk-quit:1" --column="wget logfile" --geometry="800x640"
-        }
+             return $?
+            }
+        else
+            return 1
+        fi
     fi
-    return 0
 }
 
-function set_to_active_wallpaper () {
+set_to_active_wallpaper () {
     local wall="$1"
     [[ "$wall" ]] || return 1
     if pcmanfm --wallpaper-mode=stretch -w "$images_dir"/"$wall"; then
@@ -278,9 +311,9 @@ function set_to_active_wallpaper () {
     fi
 }
 
-function set_active_wallpaper () {
+set_active_wallpaper () {
     # recalculate installed walls
-    mapfile -t installed_walls < <(find "$images_dir" -type f -regex '.*\(png\|jpg\)$' -printf '%f\n' | sort)
+    mapfile -t installed_walls < <(find "$images_dir" -maxdepth 1 -type f -regex '.*\(png\|jpg\)$' -printf '%f\n' | sort)
     number_installed_walls=${#installed_walls[@]}
 
     for wall in  "${installed_walls[@]}"; do
@@ -290,17 +323,15 @@ function set_active_wallpaper () {
     for wall in "${selected_walls[@]}"; do
         wall="${wall%|}"
         if [[ ${aa_installed_walls["$wall"]} ]]; then
-            selections_for_active[${#selections_for_active[@]}]="$wall"
+            selections_for_active+=("$wall")
         fi
     done
 
     if (( ${#selections_for_active[@]} == 0 )); then
         for wall in "${installed_walls[@]}"; do
-            selections_for_active[${#selections_for_active[@]}]="$wall"
+            selections_for_active+=("$wall")
         done
     fi
-
-    
 
     if (( ${#selections_for_active[@]} == 0 )); then {
             text="Either none of the walls selected for download were installed or no walls \
@@ -344,24 +375,29 @@ No active wallpaper can be set."
 
 # Main script starts here
 
-if ! ( check_missing_commands &&
-        validate_arguments "$@"); then
-    exit 3
-fi
+number_available_walls=0
+number_installed_walls=0
+number_selectable_walls=0
+number_selected_walls=0
+
+check_missing_commands && validate_arguments "$@" || exit 3
+
+[ -d "$images_dir" ] || {
+    mkdir -p "$images_dir"
+    [ -d "$images_dir" ] || {
+        simple_error_message "could not create $images_dir"
+        return 1
+    } 
+}
 
 tempfile || {
-    $dialog "$title_options" --title="$titletext" --no-buttons --timeout=2 --text="Could not create temp file."
+    simple_error_message "Could not create temp file"
     return 1
 }
 
 if ! get_wallpaper_list $TMPFILE; then
     exit 3
 fi
-
-number_available_walls=0
-number_installed_walls=0
-number_selectable_walls=0
-number_selected_walls=0
 
 declare -a all_walls
 declare -a installed_walls

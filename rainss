@@ -1,0 +1,73 @@
+#! /bin/bash
+debug=yes
+set -e
+#Configure:
+BROWSER=firefox
+# Use EDITOR from the environment - I am using emacs and dont have vim installed :)
+# EDITOR='vim -c /@@@/'
+#EDITOR opens the 'news' file which separates date+title from link with @@@ so this highlights @@@ by searching for it.
+#All the lines left after you close the editor get opened in BROWSER, one at a time.
+
+cd ~/.rainss || { echo No '~/.rainss' dir; exit; }
+[[ -f url ]] || { echo No url file. Syntax: '"FEEDNAME <TAB> URL"'; exit; }
+#FEEDNAME is only used for quicker identification when you open 'news' in your EDITOR.
+
+date=
+title=
+link=
+
+latest=$(while read feed url; do
+	curl -s "$url" | \
+	xml2 | \
+	grep -o -e 'item/pubDate=.*' -e 'item/title=.*' -e 'item/link=.*' -e 'item/dc:date.*' | \
+	while read; do
+	#We're only interested in the date, title and link. Once all three are found for an entry, print them.
+	if [[ "${REPLY%%=*}" == item/pubDate ]]; then
+		date=${REPLY#*=}
+	fi
+	if [[ "${REPLY%%=*}" == item/dc:date ]]; then
+		#RDF format uses dc:date
+		date=${REPLY#*=}
+	fi
+	if [[ "${REPLY%%=*}" == item/title ]]; then
+		#In rare cases plaintext titles are supplemented by HTML titles
+		title=${title:+$title,}${REPLY#*=}
+	fi
+	if [[ "${REPLY%%=*}" == item/link ]]; then
+		#If a tag is missing, then the link should not be overwritten with a new link, but be printed anyway until you can find out why a tag was missing.
+		[[ $link ]] && echo ERROR: duplicate link on feed: $feed: $link >&2
+		link=${REPLY#*=}
+	fi
+	if [[ -n "$date" && -n "$title" && -n "$link" ]]; then
+		printf "%s %s【%s】@@@%s\n" "$(date -d "$date" +"%Y-%m-%d %H:%M:%S")" "$feed" "$title" "$link"
+		date=
+		title=
+		link=
+	fi
+	#Every feed check is backgrounded / synchronized
+	done &
+done < url)
+
+wait
+#The 'history' file keeps all seen links. Only check the URL for changes (the text after @@@). Don't re-report an entry just because the title was changed.
+#The 'news' file contains the new entries.
+[[ -f history && -n "$(sed -n ' /.*@@@/ {p;q}' history)" ]] &&
+echo "$latest" | grep -Fv "$(sed 's/.*@@@//' history)" | tee -a history | tee news >/dev/null ||
+echo "$latest" | tee -a history | tee news >/dev/null
+news_lines=$(wc -l news | awk '{print $1}')
+hist_lines=$(wc -l history | awk '{print $1}')
+[[ debug ]] && {
+    printf 'News lines: %d - history lines: %d\n' $news_lines $hist_lines
+}
+#Tell stdout how many items where found and what time it is.
+echo -ne "\r$(date): "
+wc -l news
+
+#Show today's date as 'TODAY' and yesterday's date as 'YESTERDAY' for easier identification.
+sed -i "s/$(date +%Y-%m-%d)/TODAY/; s/$(date +%Y-%m-%d -d yesterday)/YESTERDAY/" news
+
+#Open news in EDITOR so you can choose which items you want to open by deleting the lines of the entries you don't want to open, saving and quitting.
+(( $news_lines )) && $EDITOR news
+#Open the links to all those entries with BROWSER, one at a time, not too quickly.
+# [[ debug ]] && exit 0
+(( $news_lines ))  && for url in $(sed 's/.*@@@//' news); do $BROWSER "$url"; sleep 0.6; done &>/dev/null

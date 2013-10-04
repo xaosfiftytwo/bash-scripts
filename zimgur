@@ -1,0 +1,43 @@
+#!/bin/bash
+
+set -e
+
+usage () { cat >&2 <<EOF
+Usage: zimgur <image_file_name.(png|jpg)> | xclip
+
+Create an image file by selecting a rectangle or single clicking to
+select a window or double clicking to select the full screen.
+
+Creates a thumbnail of the image and uploads both images to the imgur
+server.
+
+Ouputs BB code to publish the image on a forum.
+
+EOF
+exit 1
+}
+imup=/usr/local/bin/imup.py
+
+[[ "$1" ]] || usage
+image="$1"
+extension=${image##*.}
+case $extension in
+    png|jpg)
+        :;;
+    *)
+        usage
+        ;;
+esac
+
+import -pause 4 "$image"
+(( $? != 0 )) && error_messsage "import $image failed"
+link_to_image=$($imup -i imgur "$image")
+(( $? != 0 )) && error_messsage "upload of $image failed"
+thumb=${image##*.}-t.${extension}
+convert $image -resize 96X54 "$thumb"
+(( $? != 0 )) && error_messsage "creating a thumbnail of $image failed"
+link_to_thumb=$($imup -i imgur "$thumb")
+(( $? != 0 )) && error_messsage "uploading the thumbnail image failed"
+printf '[URL=%s][IMG]%s[/IMG][/URL]' "$link_to_image" "$link_to_thumb"
+
+

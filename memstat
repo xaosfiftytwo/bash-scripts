@@ -1,0 +1,23 @@
+#!/bin/bash
+human=1024
+declare -A meminfo
+
+# split the lines from /proc/meminfo in 2 fields using the : as delimeter
+meminfo_split () {
+    cat /proc/meminfo | awk '
+BEGIN { FS=":" }
+{ label=$1; value=$2; print label,value }
+' 
+}
+
+# read into an associative array after 'massaging' the values
+while read -r _tag _value; do
+    _value=${_value//kB/}
+    _value=${_value// /}
+    meminfo["$_tag"]="$_value"
+done < <(meminfo_split)
+
+# do your calculations
+printf '%d Mb\n' $(( ( ${meminfo['MemTotal']} - ${meminfo['MemFree']} - ${meminfo['Buffers']} - ${meminfo['Cached']} ) / $human ))
+
+exit 0

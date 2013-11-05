@@ -1,0 +1,104 @@
+#!/bin/bash
+# version 0.001
+
+config_file="./console-color-themes"
+
+error_exit() {
+    echo "Script error: $1" >&2
+    exit 1
+}
+
+declare -A themes
+
+regex_pattern_comment='^\#'
+regex_pattern_p0='^P0'
+regex_pattern_p4='^P4'
+regex_pattern_ident='(["][^"]+["])'
+
+load_color_themes () {
+    local x=0
+    local line ident author theme_part1 theme_part2 skipping full_title
+    local skipping
+    while read -r line; do
+        # printf '%s\n' "$line"
+        x=$((x+1))
+        [[ "$skipping" ]] && {
+            printf 'skipping line %d caused by error in previous line(s)\n' ${x}
+            continue 
+        }
+        
+        [[ "$line" ]] || continue
+
+        [[ "$line" =~ $regex_pattern_comment ]] && {
+            line=ident=author=theme_part=theme_part2=skipping=full_title""
+            continue
+        }
+        if [[ "$line" =~ $regex_pattern_p0 ]]; then
+            theme_part1="$line"
+        elif [[ "$line" =~ $regex_pattern_p4 ]]; then
+            theme_part2="$line"
+            theme_part1=$(printf '%s\n' "$ident" "$author" "$full_title" "$theme_part1" "$theme_part2")
+            key="${ident#\"}"
+            key="${key%\"}"
+            printf 'key: %s\n' "$key"
+            themes["$key"]=${theme_part1}
+        else
+            # line contains ident, author and remarks between double quotes
+            if [[ "$line" =~ $regex_pattern_ident ]]; then
+                ident=$BASH_REMATCH
+                line=${line# }
+                line=${line#${ident}}
+                if [[ "$line" =~ $regex_pattern_ident ]]; then
+                    author=$BASH_REMATCH
+                    line=${line# }
+                    line=${line#${author}}
+                    if [[ "$line" =~ $regex_pattern_ident ]]; then
+                        full_title=$BASH_REMATCH
+                    fi
+                fi
+            else
+                error_exit "$(printf 'syntax error in line %d: skipping all lines for theme %s' ${x} ${ident})"
+                skipping=true
+            fi
+        fi
+    done < "$config_file"
+}
+
+apply_color_theme () {
+    local key="$1"
+    local this_theme
+    this_theme=${themes["$key"]}
+    [[ "$this_theme" ]] || {
+        error_exit "$(printf 'unknown color theme: %s' "$key")"
+    }
+    local x=0
+    while read -r line; do
+        # printf '%s\n' "$line"
+        x=$((x+1))
+        (( x < 4 )) && continue
+        (( x == 4 )) && {
+            theme_part1=$line
+            continue
+        }
+        (( x == 5 )) && {
+            theme_part2=$line
+            for _color in $theme_part1 $theme_part2; do 
+                echo -en "\e]${_color}"
+            done
+            clear
+        }
+        (( x > 5 )) && error_exit "more than 5 lines in theme definition"
+    done <<< "$this_theme"
+}
+
+load_color_themes
+
+(( $# == 0 )) && {
+    for ident in "${!themes[@]}"; do
+        printf '%s\n' $ident
+    done | sort
+    exit 0
+}
+
+# apply a color theme to the console
+apply_color_theme "$1"

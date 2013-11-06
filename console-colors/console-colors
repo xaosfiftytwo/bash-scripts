@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.004
+# version 0.005
 
 themes_dir="./console_colors"
 
@@ -60,20 +60,39 @@ apply_color_theme () {
     clear
 }
 
+tilde_expand () {
+    local input 
+    local pattern1='^~/'
+    local pattern2='^~[^/]+'
+    local pattern3='^\$HOME'
+    local _home1="/home/$USER"
+    local _home2="/home"
+    # allow spaces in the image path -> do tilde expansion yourself
+    input="$1"
+    if [[ "$input" =~ $pattern1 ]]; then
+        input=${input/$BASH_REMATCH/${_home1}/}
+    else
+        if [[ "$input" =~ $pattern2 ]]; then
+            input=${input/\~/${_home2}/}
+        elif [[ "$input" =~ $pattern3 ]]; then
+            input="${input/${BASH_REMATCH}/${_home1}}"
+        fi
+    fi
+    printf '%s' "$input"
+}
+
+
 convert_image () {
-    local image="$1"
-    # allow spaces in the image path -> do tilda expansion yourself
-    [[ "$image" =~ "^~/" ]] && image=${image//~/$HOME/}
-    printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
+    image="$1"
+     printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
 }
 
 create_theme_using_palleter () {
     local _image="$1"
     local _key
 
-    echo "Please enter theme id: "
-    while true; do
-        read _key
+    echo "Please enter the theme identifier: "
+    while read -r _key; do
         _theme=${themes["$_key"]}
         [[ "${_theme}" ]] && { 
             printf 'theme %s already exists. try again\n'
@@ -83,10 +102,11 @@ create_theme_using_palleter () {
     done
 
     echo "Please enter the path to the image to be sampled: "
-    while true; do
-        read _image
-        [[ -e "$_image" ]] || {
-            printf 'image %s does not exist. try again\n' $_image
+    while read -r _image; do
+        printf 'image = %s\n' "${_image}"
+        _image="$(tilde_expand "${_image}")"
+        [[ -e "${_image}" ]] || {
+            printf 'image %s does not exist. try again\n' "${_image}"
             continue
         }
         break

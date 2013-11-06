@@ -1,11 +1,78 @@
 #!/bin/bash
-# version 0.005
+# version 0.006
 
 themes_dir="./console_colors"
 
 error_exit() {
     echo "Script error: $1" >&2
     exit 1
+}
+
+usage () {
+    if [[ -n "${1:-}" ]]; then
+	printf "${*}\n\n" >&2
+    fi
+    cat >&2 << EOF
+Usage: ${0} [OPTION]...
+
+Options:
+ none           List existing themes
+ -a theme       Apply specified theme
+ -c		Create a new theme from an existing image
+ -i path        Path to the image to base the theme on
+ -h             Show this help info
+ -k theme       Key or theme identifier or filename to store the theme under
+
+Rules:
+
+. The presence of the -i or -k options implies creation of a
+  theme. The -c option is then not required.
+
+. if -a and -k are both set, the -a option is honored.
+
+. if -c is specified but not -i and/or -k, then the required options 
+  will be queried for interactively.
+
+EOF
+    exit 1
+}
+
+opt_apply=
+opt_theme=
+opt_create=
+opt_image_path=
+opt_key=
+
+validate_arguments () {
+
+    while getopts "a:ci:hk:" flag; do
+        case "${flag}" in
+            a)
+                opt_apply=true
+        	opt_theme="${OPTARG}"
+        	;;
+            c)
+        	opt_create=true
+        	;;
+            i)
+        	opt_image_path="${OPTARG}"
+        	opt_create=true
+                [[ -e "${opt_image_path}" ]] || error_exit "image file does not exist"
+        	;;
+            h)
+        	usage
+        	;;
+            k)
+                opt_key="${OPTARG}"
+        	opt_create=true
+                ;;
+            *)
+        	usage
+        	;;
+        esac
+    done
+    
+    shift $((${OPTIND} - 1))
 }
 
 declare -A themes
@@ -84,33 +151,42 @@ tilde_expand () {
 
 convert_image () {
     image="$1"
-     printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
+    printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
 }
 
 create_theme_using_palleter () {
-    local _image="$1"
-    local _key
+    local _image="$opt_image_path"
+    local _key="${opt_key}"
 
-    echo "Please enter the theme identifier: "
-    while read -r _key; do
-        _theme=${themes["$_key"]}
-        [[ "${_theme}" ]] && { 
-            printf 'theme %s already exists. try again\n'
-            continue
-        }
-        break
-    done
+    [[ "${_key}" ]] || {
+        echo "Please enter the theme identifier: "
+        while read -r _key; do
+            _theme=${themes["$_key"]}
+            [[ "${_theme}" ]] && { 
+                printf 'theme %s already exists. try again\n' "${_key}"
+                continue
+            }
+            break
+        done
+    }
+    _theme=${themes["$_key"]}
+    [[ "${_theme}" ]] && { 
+        printf 'theme %s already exists\n' "${_key}"
+        exit 1
+    }
 
-    echo "Please enter the path to the image to be sampled: "
-    while read -r _image; do
-        printf 'image = %s\n' "${_image}"
-        _image="$(tilde_expand "${_image}")"
-        [[ -e "${_image}" ]] || {
-            printf 'image %s does not exist. try again\n' "${_image}"
-            continue
-        }
-        break
-    done
+    [[ "${opt_image_path}" ]] || {
+        echo "Please enter the path to the image to be sampled: "
+        while read -r _image; do
+            printf 'image = %s\n' "${_image}"
+            _image="$(tilde_expand "${_image}")"
+            [[ -e "${_image}" ]] || {
+                printf 'image %s does not exist. try again\n' "${_image}"
+                continue
+            }
+            break
+        done
+    }
 
     COL=("0" "8" "1" "9" "2" "A" "3" "B" "4" "C" "5" "D" "6" "E" "7" "F");
     x=0
@@ -126,20 +202,19 @@ create_theme_using_palleter () {
     # printf 'theme %s created by sampling image %s\n' "${_key}" "${_image}"
 }
 
+validate_arguments "$@"
+
 load_color_themes
 
 (( $# == 0 )) && {
     for ident in "${!themes[@]}"; do
-        printf '%s\n' $ident
-    done | sort
+        printf '%s\n' "$ident"
+    done | sort | columns --columns=4
     exit 0
 }
 
-# apply a color theme to the console
-if [[ "$1" == '-a' ]]; then 
-    apply_color_theme "$2"
-fi
-
-if [[ "$1" == '-c' ]]; then 
+if [[ true == "$opt_create" ]]; then 
     create_theme_using_palleter
+elif [[ true == "$opt_apply" ]]; then
+    apply_color_theme "${opt_theme}"
 fi

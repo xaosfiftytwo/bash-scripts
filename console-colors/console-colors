@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.003
+# version 0.004
 
 themes_dir="./console_colors"
 
@@ -10,7 +10,6 @@ error_exit() {
 
 declare -A themes
 
-
 load_color_theme () {
     local  _path="$1"
     local key=${_path##*/}
@@ -19,8 +18,8 @@ load_color_theme () {
     local line _colors
     local regex_pattern_comment='^\#'
     local regex_pattern_p='^P'
-    echo "processing file... $_path"
-    line=""; _colors=()
+    # echo "processing file... $_path"
+    _colors=()
     while read -r line; do
         # printf '%s\n' "$line"
         x=$((x+1))
@@ -33,7 +32,8 @@ load_color_theme () {
             error_exit "syntax error"
         fi
     done < "$_path"
-    local _this_theme=$(printf '%s\n' "{_colors[@]}")
+    local _this_theme
+    _this_theme=$(printf '%s\n' "${_colors[@]}")
     # printf 'key: %s\n' "$key"
     themes["$key"]=${_this_theme}
 }
@@ -60,6 +60,51 @@ apply_color_theme () {
     clear
 }
 
+convert_image () {
+    local image="$1"
+    # allow spaces in the image path -> do tilda expansion yourself
+    [[ "$image" =~ "^~/" ]] && image=${image//~/$HOME/}
+    printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
+}
+
+create_theme_using_palleter () {
+    local _image="$1"
+    local _key
+
+    echo "Please enter theme id: "
+    while true; do
+        read _key
+        _theme=${themes["$_key"]}
+        [[ "${_theme}" ]] && { 
+            printf 'theme %s already exists. try again\n'
+            continue
+        }
+        break
+    done
+
+    echo "Please enter the path to the image to be sampled: "
+    while true; do
+        read _image
+        [[ -e "$_image" ]] || {
+            printf 'image %s does not exist. try again\n' $_image
+            continue
+        }
+        break
+    done
+
+    COL=("0" "8" "1" "9" "2" "A" "3" "B" "4" "C" "5" "D" "6" "E" "7" "F");
+    x=0
+
+    # create the new theme file
+
+    convert_image "${_image}" | while read -r line; do
+                                    line=${line#*#}; line=${line% srgb*}
+                                    [[ "$line" ]] || continue # skip empty lines
+                                    printf 'P%s%s\n' "${COL[$x]}" "$line" >> "$themes_dir"/"$_key"
+                                    x=$((x+1))
+                                done 
+    # printf 'theme %s created by sampling image %s\n' "${_key}" "${_image}"
+}
 
 load_color_themes
 
@@ -71,4 +116,10 @@ load_color_themes
 }
 
 # apply a color theme to the console
-apply_color_theme "$1"
+if [[ "$1" == '-a' ]]; then 
+    apply_color_theme "$2"
+fi
+
+if [[ "$1" == '-c' ]]; then 
+    create_theme_using_palleter
+fi

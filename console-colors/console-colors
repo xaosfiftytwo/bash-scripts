@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.007
+# version 0.008
 
 themes_dir="./console_colors"
 
@@ -33,15 +33,17 @@ Rules:
 . if -c is specified but not -i and/or -k, then the required options 
   will be queried for interactively.
 
+. if -c and -a are both set the theme is first created and then applied
+
 EOF
     exit 1
 }
 
 opt_apply=
-opt_theme=
+opt_apply_key=
 opt_create=
+opt_create_key=
 opt_image_path=
-opt_key=
 
 validate_arguments () {
 
@@ -49,7 +51,7 @@ validate_arguments () {
         case "${flag}" in
             a)
                 opt_apply=true
-        	opt_theme="${OPTARG}"
+        	opt_apply_key="${OPTARG}"
         	;;
             c)
         	opt_create=true
@@ -63,7 +65,7 @@ validate_arguments () {
         	usage
         	;;
             k)
-                opt_key="${OPTARG}"
+                opt_create_key="${OPTARG}"
         	opt_create=true
                 ;;
             *)
@@ -78,8 +80,8 @@ validate_arguments () {
 declare -A themes
 
 load_color_theme () {
-    local  _path="$1"
-    local key=${_path##*/}
+    # load one color theme into the array
+    local _key
     # x is line counter; y is non-empty line counter
     local x=y=0
     local line _colors
@@ -88,6 +90,7 @@ load_color_theme () {
     local regex_pattern_color='^P[0-9A-Fa-f]{7}'
     # echo "processing file... $_path"
     _colors=()
+    _key="${1##*/}"
     while read -r line; do
         # printf '%s\n' "$line"
         x=$((x+1))
@@ -100,25 +103,32 @@ load_color_theme () {
             printf 'syntax error in line #%d: %s\n' $x "${line}"
             printf '%s\n' "contains no valid color code"
         fi
-    done < "$_path"
+    done < "${themes_dir}"/"${key}"
     local _this_theme
     _this_theme=$(printf '%s\n' "${_colors[@]}")
     # printf 'key: %s\n' "$key"
-    themes["$key"]=${_this_theme}
+    themes["${_key}"]=${_this_theme}
 }
 
-load_color_themes () {
-    while read -r _file; do
-        load_color_theme "$_file"
+frugal_load_color_themes () {
+    local _path _key
+    while read -r _path; do
+        # don't load the full theme in memory here
+        # just stuff the theme name in the array and give it a value of 1
+        # meaning it exists.
+        # Effectively load the theme only when necessary.
+        _key="${_path##*/}"
+        themes["${_key}"]=1
     done < <(find $themes_dir -type f)
 }
 
 apply_color_theme () {
     local key="$1"
     local this_theme
+    load_color_theme "${key}"
     this_theme=${themes["$key"]}
-    [[ "$this_theme" ]] || {
-        error_exit "$(printf 'unknown color theme: %s' "$key")"
+    [[ "$this_theme" == "1" ]] && {
+        error_exit "$(printf 'problem loading color theme: %s' "$key")"
     }
     local x=0
     while read -r _color; do
@@ -158,25 +168,30 @@ convert_image () {
 
 create_theme_using_palleter () {
     local _image="$opt_image_path"
-    local _key="${opt_key}"
+    local _key="${opt_create_key}"
+
+    [[ -z "${_key}" ]] && [[ "${opt_apply}" ]] && {
+                           _key="${opt_apply_key}"
+                    }
 
     [[ "${_key}" ]] || {
         echo "Please enter the theme identifier: "
         while read -r _key; do
             _theme=${themes["$_key"]}
-            [[ "${_theme}" ]] && { 
+            [[ "${_theme}" == 1 ]] && { 
                 printf 'theme %s already exists. try again\n' "${_key}"
                 continue
             }
             break
         done
+        global_key="${_key}"
     }
     _theme=${themes["$_key"]}
-    [[ "${_theme}" ]] && { 
+    [[ "${_theme}" == 1  ]] && { 
         printf 'theme %s already exists\n' "${_key}"
         exit 1
     }
-
+            
     [[ "${opt_image_path}" ]] || {
         echo "Please enter the path to the image to be sampled: "
         while read -r _image; do
@@ -206,7 +221,7 @@ create_theme_using_palleter () {
 
 validate_arguments "$@"
 
-load_color_themes
+frugal_load_color_themes
 
 (( $# == 0 )) && {
     for ident in "${!themes[@]}"; do
@@ -217,6 +232,12 @@ load_color_themes
 
 if [[ true == "$opt_create" ]]; then 
     create_theme_using_palleter
-elif [[ true == "$opt_apply" ]]; then
-    apply_color_theme "${opt_theme}"
+    # apply the new theme, but only if both creation
+    # and application are requested
+    if [[ "${opt_create}" ]] && [[ "${opt_apply}" ]]; then 
+        apply_color_theme "${opt_apply_key}"
+    elif [[ true == "$opt_apply" ]]; then
+        apply_color_theme "${opt_theme}"
+    fi
 fi
+ 

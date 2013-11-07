@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.006
+# version 0.007
 
 themes_dir="./console_colors"
 
@@ -85,6 +85,7 @@ load_color_theme () {
     local line _colors
     local regex_pattern_comment='^\#'
     local regex_pattern_p='^P'
+    local regex_pattern_color='^P[0-9A-Fa-f]{7}'
     # echo "processing file... $_path"
     _colors=()
     while read -r line; do
@@ -93,10 +94,11 @@ load_color_theme () {
         [[ "$line" ]] || continue
         [[ "$line" =~ $regex_pattern_comment ]] && continue
         y=$((y+1))
-        if [[ "$line" =~ $regex_pattern_p ]]; then
-            _colors+=("$line")
+        if [[ "$line" =~ $regex_pattern_color ]]; then
+            _colors+=("$BASH_REMATCH")
         else
-            error_exit "syntax error"
+            printf 'syntax error in line #%d: %s\n' $x "${line}"
+            printf '%s\n' "contains no valid color code"
         fi
     done < "$_path"
     local _this_theme
@@ -134,7 +136,7 @@ tilde_expand () {
     local pattern3='^\$HOME'
     local _home1="/home/$USER"
     local _home2="/home"
-    # allow spaces in the image path -> do tilde expansion yourself
+    # tilde expansion does not work in [[ ]] -> diy
     input="$1"
     if [[ "$input" =~ $pattern1 ]]; then
         input=${input/$BASH_REMATCH/${_home1}/}

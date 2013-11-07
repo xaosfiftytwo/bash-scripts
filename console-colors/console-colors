@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.008
+# version 0.009
 
 themes_dir="./console_colors"
 
@@ -22,6 +22,7 @@ Options:
  -i path        Path to the image to base the theme on
  -h             Show this help info
  -k theme       Key or theme identifier or filename to store the theme under
+ -x             Apply color theme in an X terminal
 
 Rules:
 
@@ -44,10 +45,11 @@ opt_apply_key=
 opt_create=
 opt_create_key=
 opt_image_path=
+opt_x=
 
 validate_arguments () {
 
-    while getopts "a:ci:hk:" flag; do
+    while getopts "a:ci:hk:x" flag; do
         case "${flag}" in
             a)
                 opt_apply=true
@@ -67,6 +69,9 @@ validate_arguments () {
             k)
                 opt_create_key="${OPTARG}"
         	opt_create=true
+                ;;
+            x)
+        	opt_x=true
                 ;;
             *)
         	usage
@@ -122,6 +127,27 @@ frugal_load_color_themes () {
     done < <(find $themes_dir -type f)
 }
 
+# Transform color code from format PXXXXXXX to rgb:XXXX/XXXX/XXXX
+transform_color () {
+    local _seq red green blue regex_pattern output
+    regex_pattern='P([0-9A-Fa-f])([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+    input=$1
+    output=
+    if [[ "$input" =~ $regex_pattern ]]; then {
+        _seq=${BASH_REMATCH[1]}
+        red=${BASH_REMATCH[2]}
+        green=${BASH_REMATCH[3]}
+        blue=${BASH_REMATCH[4]}
+        _seq="$(printf '%d' 0x${_seq})"
+        output="--color"${_seq}"=\"rgb:"${red}${red}"/"${green}${green}"/"${blue}${blue}"\""
+        # output="$(printf '--color%drgb:/%s%s/%s%s/%s%s'  $_seq $red $red $green $green $blue $blue)"
+    }                                             
+    else
+        printf 'in transform_color: %s is not a valid color code\n' "$input" >&2
+    fi
+    printf '%s' ${output}
+}
+
 apply_color_theme () {
     local key="$1"
     local this_theme
@@ -130,13 +156,35 @@ apply_color_theme () {
     [[ "$this_theme" == "1" ]] && {
         error_exit "$(printf 'problem loading color theme: %s' "$key")"
     }
-    local x=0
-    while read -r _color; do
-        # printf '%s\n' "$line"
-        x=$((x+1))
-        echo -en "\e]${_color}"
-    done <<< "$this_theme"
-    clear
+    if [[ $opt_x ]]; then {
+
+        local x=0
+        local options=
+        local option=
+        local _color
+        while read -r _color; do
+            printf 'read _color: %s\n' "${_color}"
+            transformed_color="$(transform_color ${_color})"
+            options="$options"" ""$transformed_color"
+            x=$((x+1))
+        done <<< "$this_theme"
+        eval $XTC $options
+        status=$?
+        #clear
+
+    }
+    else {
+        
+        local x=0
+        while read -r _color; do
+            # printf '%s\n' "$line"
+            echo -en "\e]${_color}"
+            x=$((x+1))
+        done <<< "$this_theme"
+        clear
+        
+    }
+    fi
 }
 
 tilde_expand () {
@@ -219,6 +267,72 @@ create_theme_using_palleter () {
     # printf 'theme %s created by sampling image %s\n' "${_key}" "${_image}"
 }
 
+################################ functions for X #################################
+
+XTC="xtermcontrol"
+
+SettingsSave() {
+   printf "\n%s\n" "Saving Current XTerm Settings:"
+
+   FOREGROUND=`$XTC --get-fg`
+   printf "%18s: %s\n" "FOREGROUND" "$FOREGROUND"
+
+   BACKGROUND=`$XTC --get-bg`
+   printf "%18s: %s\n" "BACKGROUND" "$BACKGROUND"
+
+   CURSOR=`$XTC --get-cursor`
+   printf "%18s: %s\n" "CURSOR" "$CURSOR"
+
+   MOUSE_FOREGROUND=`$XTC --get-mouse-fg`
+   printf "%18s: %s\n" "MOUSE_FOREGROUND" "$MOUSE_FOREGROUND"
+
+   MOUSE_BACKGROUND=`$XTC --get-mouse-bg`
+   printf "%18s: %s\n" "MOUSE_BACKGROUND" "$MOUSE_BACKGROUND"
+
+   FONT=`$XTC --get-font`
+   printf "%18s: %s\n" "FONT" "$FONT"
+
+   TITLE=`$XTC --get-title`
+   printf "%18s: %s\n" "TITLE" "$TITLE"
+
+   GEOMETRY=`$XTC --get-geometry`
+   printf "%18s: %s\n" "GEOMETRY" "$GEOMETRY"
+
+   HIGHLIGHT=`$XTC --get-highlight`
+   printf "%18s: %s\n" "HIGHLIGHT" "$HIGHLIGHT"
+
+   for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+   do
+      COLOR=`$XTC --get-color$i`
+      COLORS=$COLORS\ $COLOR
+      printf "%18s: %s\n" "COLOR$i" "$COLOR"
+   done
+}
+
+SettingsRestore() {
+
+   test -n "$FOREGROUND"       && OPT="$OPT --fg=\"$FOREGROUND\""
+   test -n "$BACKGROUND"       && OPT="$OPT --bg=\"$BACKGROUND\""
+   test -n "$CURSOR"           && OPT="$OPT --cursor=\"$CURSOR\""
+   test -n "$MOUSE_FOREGROUND" && OPT="$OPT --mouse-fg=\"$MOUSE_FOREGROUND\""
+   test -n "$MOUSE_BACKGROUND" && OPT="$OPT --mouse-bg=\"$MOUSE_BACKGROUND\""
+   test -n "$FONT"             && OPT="$OPT --font=\"$FONT\""
+   test -n "$TITLE"            && OPT="$OPT --title=\"$TITLE\""
+   test -n "$GEOMETRY"         && OPT="$OPT --geometry=\"$GEOMETRY\""
+
+   if test -n "$COLORS"
+   then
+      i=0
+      for COLOR in $COLORS
+      do
+         OPT="$OPT --color$i=\"$COLOR\""
+         i=`expr $i + 1`
+      done
+   fi
+
+   eval $XTC $OPT
+}
+
 validate_arguments "$@"
 
 frugal_load_color_themes
@@ -236,8 +350,9 @@ if [[ true == "$opt_create" ]]; then
     # and application are requested
     if [[ "${opt_create}" ]] && [[ "${opt_apply}" ]]; then 
         apply_color_theme "${opt_apply_key}"
-    elif [[ true == "$opt_apply" ]]; then
-        apply_color_theme "${opt_theme}"
     fi
+elif [[ true == "$opt_apply" ]]; then
+    apply_color_theme "${opt_apply_key}"
 fi
+exit 0
  

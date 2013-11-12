@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.011
+# version 0.012
 
 themes_dir="./console_colors"
 
@@ -23,7 +23,7 @@ Options:
  -h             Show this help info
  -k theme       Key or theme identifier or filename to store the theme under
  -x             Apply color theme on the fly in this X terminal emulator
-                and change the .Xresources for supported emulators
+ -u             Update .Xresources
 
 Rules:
 
@@ -47,6 +47,7 @@ opt_create=
 opt_create_key=
 opt_image_path=
 opt_x=
+opt_update_xres="n"
 
 # bash associative array of themes. key is theme name.
 # value is 1 after quickloading all themes
@@ -65,10 +66,16 @@ theme_format=
 
 color_theme_path=
 
+# xres_theme can take the values
+# xterm URxvt unknown
+xres_theme=
+
+update_xres=
+
 validate_arguments () {
     
     local flag
-    while getopts "a:ci:hk:x" flag; do
+    while getopts "a:ci:hk:ux" flag; do
         case "${flag}" in
             a)
                 opt_apply_on_the_fly=true
@@ -91,6 +98,9 @@ validate_arguments () {
                 ;;
             x)
         	opt_x=true
+                ;;
+            u)
+        	opt_update_xres="y"
                 ;;
             *)
         	usage
@@ -195,12 +205,13 @@ load_xres_color_theme () {
     mapfile -t -n 0 MAPFILE < <(cat "${color_theme_path}")
 
     for _line in "${MAPFILE[@]}"; do
-        printf -- '--->%s\n' "${_line}" >&2
+        # printf -- '--->%s\n' "${_line}" >&2
         lc=$((lc+1))
         line_attribs=()
         local i 
         for i in  0 1 2 3 4; do
             line_attribs[$i]=0
+            file_attribs[$i]=0
         done
 
         for i in 0 1 2 3 9 10 4; do
@@ -306,21 +317,21 @@ load_xres_color_theme () {
 
     done
     # evaluate global attributes
-    # if (( ${file_attribs[2]} > 0 )) && (( ${file_attribs[3]} > 0 )); then
-    #     printf '%s\n' "input file contains a mix of comment syntaxes" >&2
-    # fi
-    # if (( ${file_attribs[2]} == 0 )); then xres_chances=$((xres_chances + 10 )); fi
-    # if (( ${file_attribs[3]} == 0 )); then xres_chances=$((xres_chances - 10 )); fi 
+    if (( ${file_attribs[1]} > 0 )) && (( ${file_attribs[2]} > 0 )); then
+        printf '%s\n' "input file contains a mix of comment syntaxes" >&2
+    fi
     
-    # if (( ${file_attribs[4]} > 0 )) && (( ${file_attribs[5]} > 0 )); then
-    #     printf '%s\n' "input file contains a mix of xterm and urxt attributes" >&2
-    #     errors=$((errors+1))
-    # fi
+    if (( ${file_attribs[3]} > 0 )) && (( ${file_attribs[4]} > 0 )); then
+        printf '%s\n' "input file contains a mix of xterm and urxt attributes" >&2
+        errors=$((errors+1))
+    fi
     
+    xres_theme="unknown"
+    (( ${file_attribs[4]} > 0 )) && xres_theme="URxvt"
+    (( ${file_attribs[3]} > 0 )) && xres_theme="xterm"
+
     if (( ${_errors} > 0 )); then
-        printf '%d errors encountered while converting file %s to the console theme format\n' $errors >&2
-        printf 'the theme will not be written to the themes directory.' >&2
-        printf 'correct the errors and rerun the script.\n' >&2
+        printf '%d errors encountered while parsing file %s\n' $errors >&2
         exit 1
     fi
 }
@@ -350,9 +361,9 @@ while 16 is the maximum allowed for this format' "${_key}" ${_count})
         load_xres_color_theme "${_key}"
     fi
 
-    printf '%s ' "${theme_colors[@]}" >&2
-    printf '\n' >&2
-    printf 'the theme has %d colors defined\n' ${#theme_colors[@]} >&2
+    # printf '%s ' "${theme_colors[@]}" >&2
+    # printf '\n' >&2
+    # printf 'the theme has %d colors defined\n' ${#theme_colors[@]} >&2
     
 }
 
@@ -430,8 +441,68 @@ rgb_color_to_device_independent_rgb () {
     printf '%s' ${_output}
 }
 
+update_xresources () {
+
+    local XRESOURCES
+    declare -a XRESOURCES
+    local _Xresources="$HOME/.Xresources"
+    [[ -e ${_Xresources} ]] || {
+        touch ${_Xresources}
+        (( $? != 0 )) && error_exit "can not create ${_Xresources}"
+    }
+    [[ -w ${_Xresources} ]] && chmod +w ${_Xresources}
+    (( $? != 0 )) && error_exit "can not write to  ${_Xresources}"
+    # read $HOME/.Xresources into memory
+    mapfile -t -n 0 XRESOURCES < <(cat ${_Xresources})
+    
+
+    # read the color theme file into memory
+    
+    local COLORTHEME
+    declare -a COLORTHEME
+    mapfile -t -n 0 COLORTHEME < <(cat "${color_theme_path}")
+
+    # for every line in COLORTHEME that is not a comment line
+    # search the line in XRESOURCES which is not a comment line and
+    # which starts with the firs word from the COLORTHEME line.
+    # when you find such lines, comment them
+    #
+    # Append the lines from COLORTHEME to XRESOURCES
+
+    local i j xres_line theme_line first_word_xres first_word_theme
+    declare -i i j
+
+
+
+    for ((i=0; i<${#XRESOURCES[@]}; i++)); do
+        xres_line="{XRESOURCES[$i]}"
+        if [[ "${xres_line}" == '^$' ]]; then continue; fi
+        if [[ "${xres_line}" == '[ ]*!' ]]; then continue; fi
+        if [[ "!" == ${xres_line:0:1} ]]; then continue; fi
+        if [[ "${xres_line}" == '(^[:alnum:]+\b)' ]]; then 
+            first_word_xres=${BASH_REMATCH}
+        fi
+        
+        for ((j=0; j<${#COLORTHEME[@]})); do
+            theme_line="${COLOR_THEME[$j}"
+            if [[ "${theme_line}" == '^$' ]]; then continue; fi
+            if [[ "${theme_line}" == '[ ]*!' ]]; then continue; fi
+            if [[ "${xres_line}" == '(^[:alnum:]+\b)' ]]; then
+                first_word_theme=${BASH_REMATCH}
+                if [[ $first_word_xres == $first_word_theme ]]; then
+                    XRESOURCES[$i]="! ${xres_line}"
+                    continue
+                fi
+            fi
+        done
+    done
+}
+
 apply_color_theme_on_the_fly () {
+    # $1: color theme key
+    # $2: y/n flag to update xresources or not
     local _key="$1"
+    local _update_xres=$2
     if [[ "${themes["$_key"]}" != "1" ]]; then
         error_exit "$(printf 'theme \"%s\" does not exist' "${_key}")"
     fi
@@ -441,8 +512,8 @@ apply_color_theme_on_the_fly () {
         local _color _transformed_color _option 
         local _transformed_colors _options
         declare -a _transformed_colors _options
-        local regex_pattern
-        regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+        local _regex_pattern
+        _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
         _transformed_colors=()
         _options=()
         local x
@@ -459,7 +530,7 @@ apply_color_theme_on_the_fly () {
                 _options+=(${_option})
             else
                 _color=${theme_colors[$x]}
-                if [[ ${_color} =~ $regex_pattern ]]; then
+                if [[ ${_color} =~ ${_regex_pattern} ]]; then
                     _transformed_color=$(hash_rgb_color_to_device_independend_rgb ${_color})
                 else
                     _transformed_color=$(rgb_color_to_device_independend_rgb ${_color})
@@ -470,22 +541,24 @@ apply_color_theme_on_the_fly () {
                 _options+=(${_option})
             fi
         done
+
+        # update .Xresources if requested
+        if [[ "y" == "$_update_xres" ]]; then
+            update_xresources
+        fi
+
+        if [[ "$TERM" =~ 'xterm' ]]; then
+
         
-
-        # local _fg _bg
-        # _fg=${_transformed_colors[15]}
-        # _fg=${_fg##*=}
-        # _fg="--fg="${_fg}
-
-        # _bg=${_transformed_colors[16]}
-        # _bg=${_bg##*=}
-        # _bg="--bg="${_bg}
-
-        # _options+=($_bg $_fg)
-
-        eval $XTC "$(printf '%s ' "${_options[@]}" )"
-        status=$?
-
+            eval $XTC "$(printf '%s ' "${_options[@]}" )"
+            local _return_code=$?
+            (( ${_return_code} != 0 )) &&
+            printf '%s\n' "$XTC returned ${_return_code}" >&2
+           
+        else
+            printf 'Changing theme on the fly for terminal emulator %s is not implemented yet\n' $TERM >&2
+            return 1
+        fi
 
     else
         
@@ -583,7 +656,110 @@ create_theme_using_palleter () {
     # printf 'theme %s created by sampling image %s\n' "${_key}" "${_image}"
 }
 
+update_xresources () {
 
+    local XRESOURCES
+    declare -a XRESOURCES
+    local _Xresources="$HOME/.Xresources"
+    [[ -e ${_Xresources} ]] || {
+        touch ${_Xresources}
+        (( $? != 0 )) && error_exit "can not create ${_Xresources}"
+    }
+    [[ -w ${_Xresources} ]] && chmod +w ${_Xresources}
+    (( $? != 0 )) && error_exit "can not write to  ${_Xresources}"
+    # read $HOME/.Xresources into memory
+    mapfile -t -n 0 XRESOURCES < <(cat ${_Xresources})
+    
+
+    # read the color theme file into memory
+    
+    local COLORTHEME
+    declare -a COLORTHEME
+    mapfile -t -n 0 COLORTHEME < <(cat ${color_theme_path})
+
+    printf '%s\n' "${COLORTHEME[@]}"
+
+    # for every line in COLORTHEME that is not a comment line
+    # search the line in XRESOURCES which is not a comment line and
+    # which starts with the firs word from the COLORTHEME line.
+    # when you find such lines, comment them
+    #
+    # Append the lines from COLORTHEME to XRESOURCES
+
+    local i j xres_line theme_line first_word_xres first_word_theme
+    declare -i i j
+
+    local pattern1 pattern2 pattern3
+
+    pattern1='^$'
+    pattern2='^[ ]*!'
+    pattern3='^([A-Za-z0-9*]+:)'
+
+    local modified_flag=
+
+    for ((i=0; i<${#XRESOURCES[@]}; i++)); do
+        xres_line="${XRESOURCES[$i]}"
+
+        printf -- '--->%s\n' "${xres_line}"
+
+        if [[ "${xres_line}" =~ $pattern1 ]]; then continue; fi
+        if [[ "${xres_line}" =~ $pattern2 ]]; then continue; fi
+        if [[ "${xres_line}" =~ $pattern3 ]]; then 
+            if [[ "!" == "${xres_line:0:1}" ]]; then continue; fi
+            first_word_xres=${BASH_REMATCH}
+                
+                
+            for ((j=0; j<${#COLORTHEME[@]}; j++)); do
+                theme_line="${COLORTHEME[$j]}"
+                if [[ "${theme_line}" =~ $pattern1 ]]; then continue; fi
+                if [[ "${theme_line}" =~ $pattern2 ]]; then continue; fi
+                if [[ "${theme_line}" =~ $pattern3 ]]; then
+                    first_word_theme=${BASH_REMATCH}
+                    
+                    printf -- '\n--> %s\n' "match"
+                    
+                    if [[ $first_word_xres == $first_word_theme ]]; then
+                        XRESOURCES[$i]="! ${xres_line}"
+                        modified_flag=true
+                        continue
+                    fi
+                fi
+            done
+            
+        fi
+    done
+
+    # Write the new .Xresources file to a tempfile
+    local TEMPFILE=$(mktemp $HOME/tmp/console_colors.XXXXXX)
+    [[ $TEMPFILE ]] || error_exit "Could not create temp file"
+
+    for xres_line in "${XRESOURCES[@]}"; do
+        printf '%s\n' "$xres_line" >> ${TEMPFILE}
+    done
+    # append the new color_theme
+    
+    # append the new xres config snippet
+    printf '%s\n' "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> ${TEMPFILE}
+    printf '%s\n' "!! Added by console_colors !!" >> ${TEMPFILE}
+    printf '%s\n' "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> ${TEMPFILE}
+
+    for theme_line in "${COLORTHEME[@]}"; do
+        printf '%s\n' "$theme_line" >> ${TEMPFILE}
+    done
+    set -e
+    
+    i=0
+    while [[ -e "${_Xresources}.bak.$i" ]]; do
+        i=$((i+1))
+    done
+
+    [[ -s $TEMPFILE ]] && {
+        cp ${_Xresources} "${_Xresources}.bak.$i"
+        mv ${TEMPFILE} ${_Xresources}
+    }
+    set +e
+    printf '%s\n' "updated ${_Xresources}"
+}
 
 ################################ functions for X #################################
 
@@ -603,10 +779,11 @@ quickload_color_themes
     
     for ident in "${!themes[@]}"; do
         
-        apply_color_theme_on_the_fly "$ident"
-        printf '\t%s' $ident
-        env-info
-        sleep 2
+        if apply_color_theme_on_the_fly "$ident" "n"; then
+            printf '\t%s' $ident
+            env-info
+            sleep 2
+        fi
     done
 
     exit 0
@@ -617,12 +794,13 @@ if [[ true == "$opt_create" ]]; then
     # apply the new theme, but only if both creation
     # and application are requested
     if [[ "${opt_create}" ]] && [[ "${opt_apply_on_the_fly}" ]]; then 
-        apply_color_theme_on_the_fly "${opt_apply_key}"
+        apply_color_theme_on_the_fly "${opt_apply_key}" "$opt_update_xres"
         env-info
     fi
 elif [[ true == ${opt_apply_on_the_fly} ]]; then
-    apply_color_theme_on_the_fly "${opt_apply_key}"
-    env-info
+    if apply_color_theme_on_the_fly "${opt_apply_key}" "$opt_update_xres"; then
+        env-info
+    fi
 fi
 exit 0
  

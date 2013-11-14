@@ -1,5 +1,5 @@
 #!/bin/bash
-# version 0.012
+# version 0.013
 
 themes_dir="./console_colors"
 
@@ -71,6 +71,9 @@ color_theme_path=
 xres_theme=
 
 update_xres=
+
+colors=( background foreground cursor mouse_background mouse_foreground highlight border color0 color1 color2 color3 color4 color5 color6 color7 color8 color9 color10 color11 color12 color13 color14 color15 )
+color_names=( black red green yellow blue magenta cyan white brblack brred brgreen bryellow brblue brmagenta brcyan brwhite )
 
 validate_arguments () {
     
@@ -441,6 +444,28 @@ rgb_color_to_device_independent_rgb () {
     printf '%s' ${_output}
 }
 
+# Transform color code from format P9RRGGBB to #RRGGBB
+console_color_to_hash_rgb () {
+    local _seq _red _green _blue _regex_pattern _input _output
+    _regex_pattern='P([0-9A-Fa-f])([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+    _input=$1
+    _output=
+    if [[ "${_input}" =~ ${_regex_pattern} ]]; then {
+        _seq=${BASH_REMATCH[1]}
+        _red=${BASH_REMATCH[2]}
+        _green=${BASH_REMATCH[3]}
+        _blue=${BASH_REMATCH[4]}
+        _seq="$(printf '%d' 0x${_seq})"
+        _output="#${_red}${_green}${_blue}"
+    }                                             
+    else
+        local _error_msg
+        _error_msg="$(printf 'console_color_to_hash_rgb: %s is not a valid color code\n' "$input")"
+        error_exit ${_error_msg} 
+    fi
+    printf '%s' ${_output}
+}
+
 update_xresources () {
 
     local XRESOURCES
@@ -483,7 +508,7 @@ update_xresources () {
             first_word_xres=${BASH_REMATCH}
         fi
         
-        for ((j=0; j<${#COLORTHEME[@]})); do
+        for ((j=0; j<${#COLORTHEME[@]}; j++)); do
             theme_line="${COLOR_THEME[$j}"
             if [[ "${theme_line}" == '^$' ]]; then continue; fi
             if [[ "${theme_line}" == '[ ]*!' ]]; then continue; fi
@@ -498,6 +523,145 @@ update_xresources () {
     done
 }
 
+apply_xterm_color_theme_on_the_fly () {
+    local _color _transformed_color _option 
+    local _transformed_colors _options
+    declare -a _transformed_colors _options
+    local _regex_pattern
+    _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+    _transformed_colors=()
+    _options=()
+    local x
+    # 16 base colors, bg and fg present depending on theme_format
+    # if bg and fg not defined, default to one of the base colors - prefer dark bg
+    # WARNING: bg and fg are in hash_rgb format or rgb:rr/gg/bb format
+    local _max
+    if (( theme_format==1 )); then _max=16; else _max=18; fi
+    for ((x=0; x<${_max}; x++)); do
+        if (( x<16)); then
+            _transformed_color=$(console_color_to_device_independent_rgb ${theme_colors[$x]})
+            _transformed_colors+=(${_transformed_color})
+            _option="$_transformed_color"
+            _options+=(${_option})
+        else
+            _color=${theme_colors[$x]}
+            if [[ ${_color} =~ ${_regex_pattern} ]]; then
+                _transformed_color=$(hash_rgb_color_to_device_independend_rgb ${_color})
+            else
+                _transformed_color=$(rgb_color_to_device_independend_rgb ${_color})
+            fi
+            _option=(${_transformed_color})
+            (( x == 16 )) && _option=${_option/--color/--bg}
+            (( x == 17 )) && _option=${_option/--color/--fg}
+            _options+=(${_option})
+        fi
+    done
+
+        
+    eval $XTC "$(printf '%s ' "${_options[@]}" )"
+    local _return_code=$?
+    (( ${_return_code} != 0 )) &&
+    printf '%s\n' "$XTC returned ${_return_code}" >&2
+ 
+}
+
+change_color () {
+    case $1 in
+        color*)
+            send_osc 4 "${1#color};$2" ;;
+        foreground)
+            send_osc 10 "$2" ;;
+        background)
+            send_osc 11 "$2" ;;
+        cursor)
+            send_osc 12 "$2" ;;
+        mouse_foreground)
+            send_osc 13 "$2" ;;
+        mouse_background)
+            send_osc 14 "$2" ;;
+        highlight)
+            send_osc 17 "$2" ;;
+        border)
+            send_osc 708 "$2" ;;
+    esac
+}
+
+send_escape_sequence () {
+    escape_sequence="$1"
+    
+    # wrap escape sequence when within a TMUX session
+    [ ! -z "$TMUX" ] && escape_sequence="${DSC}tmux;${ESC}${escape_sequence}${ESC}\\"
+    
+    printf "${escape_sequence}"
+}
+
+send_osc () {
+    local ESC BEL DSC OSC Ps Pt
+    ESC="\033"
+    BEL="\007"
+    DSC="${ESC}P"
+    OSC="${ESC}]"
+    Ps=$1
+    Pt=$2
+    command="$OSC$Ps;$Pt$BEL"
+    send_escape_sequence $command
+}
+
+unset_colors () {
+    for color in ${colors[@]}; do
+        unset ${!color}
+    done
+}
+
+set_colors () {
+    for color in ${colors[@]}; do
+        [[ ${!color} ]] && change_color "$color" "${!color}"
+    done
+}
+
+
+apply_rxvt_color_theme_on_the_fly () {
+    local _color _transformed_color _option 
+    local _transformed_colors _options
+    declare -a _transformed_colors _options
+    local _regex_pattern
+    _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+    _transformed_colors=()
+    _options=()
+    local x
+    # 16 base colors, bg and fg present depending on theme_format
+    # if bg and fg not defined, default to one of the base colors - prefer dark bg
+    # WARNING: bg and fg are in hash_rgb format or rgb:rr/gg/bb format
+    local _max
+    if (( theme_format==1 )); then _max=16; else _max=18; fi
+    for ((x=0; x<${_max}; x++)); do
+        if (( x<16)); then
+            _transformed_color=$(console_color_to_hash_rgb ${theme_colors[$x]})
+            _transformed_colors+=(${_transformed_color})
+        else
+            _color=${theme_colors[$x]}
+            if [[ ${_color} =~ ${_regex_pattern} ]]; then
+                _transformed_color=${_color}
+            else
+                _transformed_color=$(rgb_color_to_hash_rgb ${_color})
+            fi
+            _transformed_colors+=(${_transformed_color})
+        fi
+
+    done
+    
+    printf '%s\n' "${_transformed_colors[@]}" 
+
+    for (( x=0; x<16; x++));do
+        eval color$x=${_transformed_colors[$x]}
+    done
+    eval background=${_transformed_colors[16]}
+    eval foreground=${_transformed_colors[17]}
+    set_colors
+                      
+}
+
+
 apply_color_theme_on_the_fly () {
     # $1: color theme key
     # $2: y/n flag to update xresources or not
@@ -509,56 +673,30 @@ apply_color_theme_on_the_fly () {
     (( ${#theme_colors[@]} == 0 )) && load_color_theme "${_key}"    
     if [[ $opt_x ]]; then 
         
-        local _color _transformed_color _option 
-        local _transformed_colors _options
-        declare -a _transformed_colors _options
-        local _regex_pattern
-        _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
-        _transformed_colors=()
-        _options=()
-        local x
-        # 16 base colors, bg and fg present depending on theme_format
-        # if bg and fg not defined, default to one of the base colors - prefer dark bg
-        # WARNING: bg abd fg are in hash_rgb format or rgb:rr/gg/bb format
-        local _max
-        if (( theme_format==1 )); then _max=16; else _max=18; fi
-        for ((x=0; x<${_max}; x++)); do
-            if (( x<16)); then
-                _transformed_color=$(console_color_to_device_independent_rgb ${theme_colors[$x]})
-                _transformedtheme_colors+=(${_transformed_color})
-                _option="$_transformed_color"
-                _options+=(${_option})
-            else
-                _color=${theme_colors[$x]}
-                if [[ ${_color} =~ ${_regex_pattern} ]]; then
-                    _transformed_color=$(hash_rgb_color_to_device_independend_rgb ${_color})
-                else
-                    _transformed_color=$(rgb_color_to_device_independend_rgb ${_color})
-                fi
-                _option=(${_transformed_color})
-                (( x == 16 )) && _option=${_option/--color/--bg}
-                (( x == 17 )) && _option=${_option/--color/--fg}
-                _options+=(${_option})
-            fi
-        done
 
         # update .Xresources if requested
         if [[ "y" == "$_update_xres" ]]; then
             update_xresources
         fi
 
-        if [[ "$TERM" =~ 'xterm' ]]; then
 
-        
-            eval $XTC "$(printf '%s ' "${_options[@]}" )"
-            local _return_code=$?
-            (( ${_return_code} != 0 )) &&
-            printf '%s\n' "$XTC returned ${_return_code}" >&2
-           
-        else
-            printf 'Changing theme on the fly for terminal emulator %s is not implemented yet\n' $TERM >&2
-            return 1
-        fi
+        case $TERM in
+            xterm*)
+                ( apply_xterm_color_theme_on_the_fly )
+                ;;
+
+            *rxvt*)
+
+                # use dynamic-colors to change the rxvt theme on the fly
+                # do it in a subshell so as to not pollute the scripts environment
+                ( apply_rxvt_color_theme_on_the_fly )
+                ;;
+            *)
+                printf 'Changing theme on the fly for terminal emulator %s is not implemented yet\n' $TERM >&2
+                return 1
+                ;;
+            
+        esac
 
     else
         
@@ -774,17 +912,17 @@ quickload_color_themes
         printf '%s\n' "$ident"
     done | sort | columns --columns=4
 
-    printf '%s\n\n' "show all existing color themes..."
+    # printf '%s\n\n' "show all existing color themes..."
 
     
-    for ident in "${!themes[@]}"; do
+    # for ident in "${!themes[@]}"; do
         
-        if apply_color_theme_on_the_fly "$ident" "n"; then
-            printf '\t%s' $ident
-            env-info
-            sleep 2
-        fi
-    done
+    #     if apply_color_theme_on_the_fly "$ident" "n"; then
+    #         printf '\t%s' $ident
+    #         env-info
+    #         sleep 2
+    #     fi
+    # done
 
     exit 0
 }
@@ -802,5 +940,5 @@ elif [[ true == ${opt_apply_on_the_fly} ]]; then
         env-info
     fi
 fi
+
 exit 0
- 

@@ -1,11 +1,20 @@
 #!/bin/bash
-# version 0.013
+# version 0.014
 
-themes_dir="./console_colors"
+THEMES_DIR="$HOME/.local/share/console-colors"
+       XTC="xtermcontrol"
 
-error_exit() {
-    echo "Script error: $1" >&2
+die() {
+    printf '%b\n' >&2 "\033[36m[E] $*\033[0m"
     exit 1
+}
+
+warn() {
+    printf '%b\n' >&2 "\033[36m[W] $*\033[0m"
+}
+
+[[ -d "${THEMES_DIR}" ]] || { 
+    mkdir -p "${THEMES_DIR}" || die "could not create ${THEMES_DIR}"
 }
 
 usage () {
@@ -13,54 +22,34 @@ usage () {
 	printf "${*}\n\n" >&2
     fi
     cat >&2 << EOF
-Usage: ${0} [OPTION]...
+Usage: ${0} [COMMAND]...
 
-Options:
- none           List existing themes
- -a theme       Apply specified theme on the fly - without changing .Xresources
- -c		Create a new theme from an existing image
- -i path        Path to the image to base the theme on
- -h             Show this help info
- -k theme       Key or theme identifier or filename to store the theme under
- -x             Apply color theme on the fly in this X terminal emulator
- -u             Update .Xresources
-
-Rules:
-
-. The presence of the -i or -k options implies creation of a
-  theme. The -c option is then not required.
-
-. if -a and -k are both set, the -a option is honored.
-
-. if -c is specified but not -i and/or -k, then the required options 
-  will be queried for interactively.
-
-. if -c and -a are both set the theme is first created and then applied
+Commands and arguments:
+   c,create theme path_to_image   Create a new theme from an existing image
+   e,edit theme                   Open the theme in an editor
+   l,list                         List existing themes
+   s,switch theme                 Switch to the  specified theme - without updating .Xresources
+   u,update theme                 Update .Xresources with the theme
+   r,remove theme                 Remove theme                      
+   a,audit theme                  Audit theme
+   h,help                         Show this help info
 
 EOF
     exit 1
 }
+
 # global variables
-opt_apply_on_the_fly=
-opt_apply_key=
-opt_create=
-opt_create_key=
-opt_image_path=
-opt_x=
-opt_update_xres="n"
+cmd=
+theme_name=
+path_to_image=
+update=
 
 # bash associative array of themes. key is theme name.
 # value is 1 after quickloading all themes
 declare -A themes
 
-# theme_colors is an indexed array
-# 16 console color values in format P9RRGGBB
-# maybe plus 2 #RRGGBB values for X, resp. background and foreground color
-declare -a theme_colors
-theme_colors=()
-
 # theme_format: 2 possible values:
-#       1: console_color format - ^P9RRGGBB
+#       1: console_color format - one ^P9RRGGBB expression per line
 #       2: .Xresources format   - either #RRGGBB or rgb:RR/GG/BB
 theme_format=
 
@@ -70,51 +59,10 @@ color_theme_path=
 # xterm URxvt unknown
 xres_theme=
 
-update_xres=
-
 colors=( background foreground cursor mouse_background mouse_foreground highlight border color0 color1 color2 color3 color4 color5 color6 color7 color8 color9 color10 color11 color12 color13 color14 color15 )
 color_names=( black red green yellow blue magenta cyan white brblack brred brgreen bryellow brblue brmagenta brcyan brwhite )
 
-validate_arguments () {
-    
-    local flag
-    while getopts "a:ci:hk:ux" flag; do
-        case "${flag}" in
-            a)
-                opt_apply_on_the_fly=true
-        	opt_apply_key="${OPTARG}"
-        	;;
-            c)
-        	opt_create=true
-        	;;
-            i)
-        	opt_image_path="${OPTARG}"
-        	opt_create=true
-                [[ -e "${opt_image_path}" ]] || error_exit "image file does not exist"
-        	;;
-            h)
-        	usage
-        	;;
-            k)
-                opt_create_key="${OPTARG}"
-        	opt_create=true
-                ;;
-            x)
-        	opt_x=true
-                ;;
-            u)
-        	opt_update_xres="y"
-                ;;
-            *)
-        	usage
-        	;;
-        esac
-    done
-    
-    shift $((${OPTIND} - 1))
-
-    color_theme_path="$themes_dir"/"${opt_create_key:-${opt_apply_key}}"
-}
+color_theme_path="$THEMES_DIR"/"${opt_create_key:-${opt_apply_key}}"
 
 on_console () {
     local _pattern='tty'
@@ -125,16 +73,64 @@ on_console () {
     fi
 }
 
+unset_colors () {
+    for color in ${colors[@]}; do
+        unset ${!color}
+    done
+}
+
+set_colors () {
+    for color in ${colors[@]}; do
+        [[ ${!color} ]] && change_color "$color" "${!color}"
+    done
+}
+
+audit_color_theme () {
+    local problems
+    declare -a problems
+    local start limit x
+    declare -i start limit x
+    case $theme_format in
+        1) 
+            start=7
+            limit=${#colors[@]}
+            ;;
+        2)
+            start=0
+            limit=${#colors[@]}
+            ;;
+        *)
+            die "theme format unknown"
+            ;;
+    esac
+
+    for ((x=$start; x<$limit; x++));do
+        color=${colors[$x]}
+        if [ ! ${!color} ]; then
+            problems+=( "\033[36m${color}\033[0m is not defined" )
+        fi
+    done
+    if [ ${#problems[@]} -ne 0 ]; then
+        echo >&2 "auditing $1:"
+        for p in "${problems[@]}"
+        do
+            printf '%b\n' >&2 " * $p"
+        done
+    fi
+}
+
 load_console_color_theme () {
-    # load one color theme into the global array theme_colors
+    # store the results in global variables color0..color15 in format P9RRGGNN
     local _key
     # x is line counter; y is non-empty line counter
     local x=y=0
-    local regex_pattern_comment='^\#'
-    local regex_pattern_p='^P'
-    local regex_pattern_color='^P[0-9A-Fa-f]{7}'
-    # echo "processing file... $_path"
-    _key="${1##*/}"
+    local line
+    local regex_pattern_comment='^[\s]*#'
+    local regex_pattern_color='^[\s]*(P)([0-9A-Fa-f])([0-9A-Fa-f]{6})'
+    local _dec
+    declare -i _dec x y
+    _key="$theme_name"
+    unset_colors
     while read -r line; do
         # printf '%s\n' "$line"
         x=$((x+1))
@@ -142,17 +138,17 @@ load_console_color_theme () {
         [[ "$line" =~ $regex_pattern_comment ]] && continue
         y=$((y+1))
         if [[ "$line" =~ $regex_pattern_color ]]; then
-            theme_colors+=("$BASH_REMATCH")
+            _dec=$((16#${BASH_REMATCH[2]}))
+            eval color${_dec}="${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}"
         else
             printf 'syntax error in line #%d: %s\n' $x "${line}" >&2
-            error_exit "contains no valid color code"
+            die "contains no valid color code"
         fi
     done < "${color_theme_path}"
-    # _this_theme=$(printf '%s\n' "${colors[@]}")
-    # themes["${_key}"]=${_this_theme}
+    audit_color_theme "${_key}"
 }
 
-load_xres_color_theme () {
+load_xresources_color_theme () {
 # convert from xres format to console-color format
     local _key
     _key="${1##*/}"
@@ -173,21 +169,31 @@ load_xres_color_theme () {
     # index 6 - has colorxx:
     regex_pattern+=('(color[0-9]{2}:)')
     # index 7 - has hash color
-    regex_pattern+=('#([0-9a-fA-F]{6})')
+    regex_pattern+=('(#[0-9a-fA-F]{6})')
     # index 8 - has hash rgb/xx/xx/xx color
-    regex_pattern+=('rgb:([0-9a-fA-F]{2})/([0-9a-fA-F]{2})/([0-9a-fA-F]{2})')
+    regex_pattern+=('(rgb:[0-9a-fA-F]{2}/[0-9a-fA-F]{2}/[0-9a-fA-F]{2})')
     # index 9 - has background:
-    regex_pattern+=('(background:)')
+    regex_pattern+=('[^_](background:)')
     # index 10 - has foreground:
     regex_pattern+=('(foreground:)')
+    # index 11 - has cursor:
+    regex_pattern+=('(cursor:)')
+    # index 12 - has mouse_background:
+    regex_pattern+=('(mouse_background:)')
+    # index 13 - has mouse_foreground:
+    regex_pattern+=('(mouse_foreground:)')
+    # index 14 - has highlight:
+    regex_pattern+=('(highlight:)')
+    # index 15 - has border:
+    regex_pattern+=('(border:)')
                      
     local lc=0 # line counter
+    declare -i lc
     local _line
     local _errors=0
-    local xres_chances=0
     
-    # store line attributes in an array.
-    # the index in the array corresponds to the regex_patter_number
+    # store line attributes in global variables color0..color15 background...
+    # line attributes are stored in an array with index = index in pattern array 
     # i.e if the line has pattern 8, hash_attribs[8] will contain the match(es)
     local line_attribs file_attribs
     declare -a line_attribs file_attribs
@@ -217,108 +223,42 @@ load_xres_color_theme () {
             file_attribs[$i]=0
         done
 
-        for i in 0 1 2 3 9 10 4; do
+        for i in 0 1 2 3 4; do
             if [[ "${_line}" =~ ${regex_pattern[$i]} ]]; then
                 file_attribs[$i]=$((file_attribs[$i]+1))
                 line_attribs[$i]=$((line_attribs[$i]+1))
             fi
         done
 
-        for i in 7 8 5 6; do
+        for ((i=5; i<16; i++)); do
             if [[ "${_line}" =~ ${regex_pattern[$i]} ]]; then
-                if (( $i == 8 )); then
-                    line_attribs[$i]="${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]}"
-                else
-                    line_attribs[$i]="${BASH_REMATCH[1]}"
-                fi
+                line_attribs[$i]="${BASH_REMATCH[1]}"
             fi
         done
 
         # evaluate line attributes here
-
+        # do not convert the color codes
         local _attrib _color_index _color _rgb color_index_code
-        # color lines: colorx
-        if [[ "${line_attribs[5]}" ]]; then
-            _attrib="${line_attribs[5]}"
-            _color_index="${_attrib:5:1}"
-            if [[ "${line_attribs[7]}" ]]; then
-                _attrib="${line_attribs[7]}"
-                _color=${_attrib}
-                theme_colors[${_color_index}]="P"${_color_index}${_color}
-                # default bg and fg
-                _color="#"${_color}
-                [[ "${_color_index}" == 0 ]] && theme_colors[16]=${theme_colors[16]:-${_color}}
-                [[ "${_color_index}" == 7 ]] && theme_colors[17]=${theme_colors[17]:-${_color}}
-            elif [[ "${line_attribs[8]}" ]]; then
-                _attrib="${line_attribs[8]}"
-                _rgb=(${_attrib})
-                _color=${_rgb[0]}${_rgb[1]}${_rgb[2]}
-                theme_colors[${_color_index}]="P"${_color_index}${_color}
-                default bg and fg
-                _color="#"${_color}
-                [[ "${_color_index}" == 0 ]] && theme_colors[16]=${theme_colors[16]:-${_color}}
-                [[ "${_color_index}" == 7 ]] && theme_colors[17]=${theme_colors[17]:-${_color}}
-            else
-                printf 'syntax error: line %d has invalid color definition\n' ${lc} >&2
-                errors=$((errors+1))
-            fi
-        fi
 
-        # color lines: colorxx
-        if [[ "${line_attribs[6]}" ]]; then
-            _attrib="${line_attribs[6]}"
-            _color_index="${_attrib:5:2}"
-            _color_index_code="$(printf '%x' ${_color_index} | tr [:lower:] [:upper:])"
-            if [[ "${line_attribs[7]}" ]]; then
-                _attrib="${line_attribs[7]}"
-                _color=${_attrib}
-                theme_colors[${_color_index}]="P"${_color_index_code}${_color}
-            elif [[ "${line_attribs[8]}" ]]; then
-                _attrib="${line_attribs[8]}"
-                _rgb=(${_attrib})
-                _color=${_rgb[0]}${_rgb[1]}${_rgb[2]}
-                theme_colors[${_color_index}]="P"${_color_index_code}${_color}
-            else
-                printf 'syntax error: line %d has invalid color definition\n' ${lc} >&2
-                errors=$((errors+1))
-            fi
-        fi
+        # skip comment line
+        (( "${line_attribs[2]}" > 0 )) && continue
 
-        # background color
-        if [[ "${line_attribs[9]}" ]]; then
-            if [[ "${line_attribs[7]}" ]]; then
-                _attrib="${line_attribs[7]}"
-                _color=${_attrib}
-                theme_colors[16]="#"${_color}
-            elif [[ "${line_attribs[8]}" ]]; then
-                _attrib="${line_attribs[8]}"
-                _rgb=(${_attrib})
-                _color="${_rgb[0]}/${_rgb[1]}/${_rgb[2]}"
-                theme_colors[16]="#"${_color}
-            else
-                printf 'syntax error: line %d has invalid color definition\n' ${lc}
-                errors=$((errors+1))
+        for i in 5 6 9 10 11 12 13 14 15; do
+            if [[ "${line_attribs[$i]}" ]]; then
+                _color="${line_attribs[$i]}"
+                _color="${_color/%:}"
+                if [[ "${line_attribs[7]}" ]]; then
+                    eval "${_color}=${line_attribs[7]}"
+                elif [[ "${line_attribs[8]}" ]]; then
+                    eval "${_color}=${line_attribs[8]}"
+                else
+                    _error_msg=$(printf 'syntax error: line %d has invalid color definition\n' ${lc})
+                    warn "${_error_msg}"
+                fi
             fi
-        fi
-
-        # foreground color
-        if [[ "${line_attribs[10]}" ]]; then
-            if [[ "${line_attribs[7]}" ]]; then
-                _attrib="${line_attribs[7]}"
-                _color=${_attrib}
-                theme_colors[17]="#"${_color}
-            elif [[ "${line_attribs[8]}" ]]; then
-                _attrib="${line_attribs[8]}"
-                _rgb=(${_attrib})
-                _color="${_rgb[0]}/${_rgb[1]}/${_rgb[2]}"
-                theme_colors[17]="#"${_color}
-            else
-                printf 'syntax error: line %d has invalid color definition\n' ${lc}
-                errors=$((errors+1))
-            fi
-        fi
-
+        done
     done
+
     # evaluate global attributes
     if (( ${file_attribs[1]} > 0 )) && (( ${file_attribs[2]} > 0 )); then
         printf '%s\n' "input file contains a mix of comment syntaxes" >&2
@@ -337,31 +277,33 @@ load_xres_color_theme () {
         printf '%d errors encountered while parsing file %s\n' $errors >&2
         exit 1
     fi
+
+    audit_color_theme
 }
 
 load_color_theme () {
     # determine format of the theme file: console_colors or xres format?
     # sets global variable theme_format
     local _key
-    _key="${1##*/}"
+    _key="$theme_name"
     local _pattern 
-    _pattern='^P[0-9a-fA-F]{7}'
+    _pattern='P[0-9a-fA-F]{7}'
     local -i _count
-    _count=$(grep -c -E ${_pattern} "${themes_dir}/${_key}")
-    if (( _count == 16 )); then
+    _count=$(grep -c -E ${_pattern} "${THEMES_DIR}/${_key}")
+    if (( _count > 5 )); then
         theme_format=1
         load_console_color_theme "${_key}"
-    elif (( _count > 0 )) && (( _count < 16 )); then
-        local _errmsg=$(printf 'theme %s is not complete: 
-only %d out of 16 color definitions are  present' "${_key}" ${_count})
-        error_exit "${_errmsg}"
-    elif (( _count > 16 )); then
-        local _errmsg=$(printf 'theme %s contains %d color definitions
-while 16 is the maximum allowed for this format' "${_key}" ${_count})
-        error_exit "${_errmsg}"
+#     elif (( _count > 0 )) && (( _count < 16 )); then
+#         local _errmsg=$(printf 'theme %s is not complete: 
+# only %d out of 16 color definitions are  present' "${_key}" ${_count})
+#         die "${_errmsg}"
+#     elif (( _count > 16 )); then
+#         local _errmsg=$(printf 'theme %s contains %d color definitions
+# while 16 is the maximum allowed for this format' "${_key}" ${_count})
+#         die "${_errmsg}"
     else
         theme_format=2
-        load_xres_color_theme "${_key}"
+        load_xresources_color_theme "${_key}"
     fi
 
     # printf '%s ' "${theme_colors[@]}" >&2
@@ -379,7 +321,7 @@ quickload_color_themes () {
         # Effectively load the theme only when necessary.
         _key="${_path##*/}"
         themes["${_key}"]="1"
-    done < <(find $themes_dir -type f)
+    done < <(find $THEMES_DIR -type f)
 }
 
 # Transform color code from format PXXXXXXX to rgb:XXXX/XXXX/XXXX
@@ -393,19 +335,19 @@ console_color_to_device_independent_rgb () {
         _red=${BASH_REMATCH[2]}
         _green=${BASH_REMATCH[3]}
         _blue=${BASH_REMATCH[4]}
-        _seq="$(printf '%d' 0x${_seq})"
-        _output="--color"${_seq}"=\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
+        # _seq="$(printf '%d' 0x${_seq})"
+        _output="\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
     }                                             
     else
         local _error_msg
         _error_msg="$(printf 'console_color_to_device_independent_rgb: %s is not a valid color code\n' "${_input}")"
-        error_exit ${_error_msg} 
+        die ${_error_msg} 
     fi
     printf '%s' ${_output}
 }
 
 # Transform color code from format #RRGGBB to rgb:XXXX/XXXX/XXXX
-hash_rgb_color_to_device_independend_rgb () {
+hash_rgb_color_to_device_independent_rgb () {
     local _seq _red _green _blue _regex_pattern _input _output
     _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
     _input=$1
@@ -414,12 +356,12 @@ hash_rgb_color_to_device_independend_rgb () {
         _red=${BASH_REMATCH[1]}
         _green=${BASH_REMATCH[2]}
         _blue=${BASH_REMATCH[3]}
-        _output="--color=\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
+        _output="\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
     }                                             
     else
         local _error_msg
         _error_msg="$(printf 'hash_rgb_color_to_device_independent_rgb: %s is not a valid color code\n' "${_input}")"
-        error_exit ${_error_msg} 
+        die ${_error_msg} 
     fi
     printf '%s' ${_output}
 }
@@ -434,12 +376,32 @@ rgb_color_to_device_independent_rgb () {
         _red=${BASH_REMATCH[1]}
         _green=${BASH_REMATCH[2]}
         _blue=${BASH_REMATCH[3]}
-        _output="--color=\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
+        _output="\"rgb:"${_red}${_red}"/"${_green}${_green}"/"${_blue}${_blue}"\""
     }                                             
     else
         local _error_msg
         _error_msg="$(printf 'Rrgb_color_to_device_independent_rgb: %s is not a valid color code\n' "$input")"
-        error_exit ${_error_msg} 
+        die ${_error_msg} 
+    fi
+    printf '%s' ${_output}
+}
+
+# Transform color code from format rgb:XX/XX/XX to #XXXXXX
+rgb_color_to_hash_rgb () {
+    local _seq _red _green _blue _regex_pattern _input _output
+    _regex_pattern='rgb:([0-9a-fA-F]{2})/([0-9a-fA-F]{2})/([0-9a-fA-F]{2})'
+    _input=$1
+    _output=
+    if [[ "${_input}" =~ ${_regex_pattern} ]]; then {
+        _red=${BASH_REMATCH[1]}
+        _green=${BASH_REMATCH[2]}
+        _blue=${BASH_REMATCH[3]}
+        _output="#${_red}${_green}${_blue}"
+    }                                             
+    else
+        local _error_msg
+        _error_msg="$(printf 'rgb_color_to_device_independent_rgb: %s is not a valid color code\n' "$input")"
+        die ${_error_msg} 
     fi
     printf '%s' ${_output}
 }
@@ -461,7 +423,7 @@ console_color_to_hash_rgb () {
     else
         local _error_msg
         _error_msg="$(printf 'console_color_to_hash_rgb: %s is not a valid color code\n' "$input")"
-        error_exit ${_error_msg} 
+        die ${_error_msg} 
     fi
     printf '%s' ${_output}
 }
@@ -473,10 +435,10 @@ update_xresources () {
     local _Xresources="$HOME/.Xresources"
     [[ -e ${_Xresources} ]] || {
         touch ${_Xresources}
-        (( $? != 0 )) && error_exit "can not create ${_Xresources}"
+        (( $? != 0 )) && die "can not create ${_Xresources}"
     }
     [[ -w ${_Xresources} ]] && chmod +w ${_Xresources}
-    (( $? != 0 )) && error_exit "can not write to  ${_Xresources}"
+    (( $? != 0 )) && die "can not write to  ${_Xresources}"
     # read $HOME/.Xresources into memory
     mapfile -t -n 0 XRESOURCES < <(cat ${_Xresources})
     
@@ -523,46 +485,176 @@ update_xresources () {
     done
 }
 
-apply_xterm_color_theme_on_the_fly () {
+switch_to_color_theme_on_gnome_terminal () {
     local _color _transformed_color _option 
     local _transformed_colors _options
     declare -a _transformed_colors _options
     local _regex_pattern
     _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
-    _transformed_colors=()
+    local x
+    # 16 base colors, bg and fg present depending on theme_format
+    # if bg and fg not defined, default to one of the base colors - prefer dark bg
+    # WARNING: bg and fg are in hash_rgb format or rgb:rr/gg/bb format
+    local limit
+    declare -i x limit
+    declare -a _transformed_colors
+    local result=
+
+    case $theme_format in
+        1)
+            start=7
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    _transformed_color=$(console_color_to_hash_rgb ${!color})
+                    eval "${color}=${_transformed_color}"
+                    _transformed_colors+=(${!color})
+                }
+            done                
+            ;;
+        2)
+            start=0
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    if [[ ${!color} =~ ${_regex_pattern} ]]; then
+                        _transformed_color=${!color}
+                    else
+                        _transformed_color=$(rgb_color_to_hash_rgb ${!color})
+                    fi
+                    eval "${color}=${_transformed_color}"
+                    _transformed_colors+=(${!color})
+                }
+            done
+            ;;
+        *)
+            die "theme format unknown"
+            ;;
+    esac
+
+    x=0
+    for _color in "${_transformed_colors[@]}"; do
+        ((x==0)) && echo -en ${_color} || echo -en ":"${_color}
+        x=$((x+1))
+    done
+    clear
+    env-info
+}
+
+switch_to_color_theme_on_xterm () {
+    local _color _transformed_color _option 
+    local _options
+    declare -a _options
+    local _regex_pattern
+    _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
     _options=()
     local x
     # 16 base colors, bg and fg present depending on theme_format
     # if bg and fg not defined, default to one of the base colors - prefer dark bg
     # WARNING: bg and fg are in hash_rgb format or rgb:rr/gg/bb format
-    local _max
-    if (( theme_format==1 )); then _max=16; else _max=18; fi
-    for ((x=0; x<${_max}; x++)); do
-        if (( x<16)); then
-            _transformed_color=$(console_color_to_device_independent_rgb ${theme_colors[$x]})
-            _transformed_colors+=(${_transformed_color})
-            _option="$_transformed_color"
-            _options+=(${_option})
-        else
-            _color=${theme_colors[$x]}
-            if [[ ${_color} =~ ${_regex_pattern} ]]; then
-                _transformed_color=$(hash_rgb_color_to_device_independend_rgb ${_color})
-            else
-                _transformed_color=$(rgb_color_to_device_independend_rgb ${_color})
-            fi
-            _option=(${_transformed_color})
-            (( x == 16 )) && _option=${_option/--color/--bg}
-            (( x == 17 )) && _option=${_option/--color/--fg}
-            _options+=(${_option})
-        fi
-    done
+    local limit
+    declare -i x limit
 
-        
+    case $theme_format in
+        1)
+            start=7
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    _transformed_color=$(console_color_to_device_independent_rgb ${!color})
+                    _option="--${color}="${_transformed_color}
+                    _options+=(${_option})
+                }
+            done                
+            ;;
+        2)
+            start=0
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    if [[ ${!color} =~ ${_regex_pattern} ]]; then
+                        _transformed_color=$(hash_rgb_color_to_device_independent_rgb ${!color})
+                    else
+                        _transformed_color=$(rgb_color_to_device_independent_rgb ${!color})
+                    fi
+                    case $x in 
+                        0)
+                            _option="--bg="${_transformed_color};;
+                        1)
+                            _option="--fg="${_transformed_color};;
+                        3)
+                            _option="--mouse-bg="${_transformed_color};;
+                        4)
+                            _option="--mouse-fg="${_transformed_color};;
+                        6)
+                            # --border is not supported by xtermcontrol
+                            ;;
+                        *)
+                            _option="--${color}="${_transformed_color}
+                    esac
+                    _options+=(${_option})
+                }
+            done
+            ;;
+        *)
+            die "theme format unknown"
+            ;;
+    esac
+    
     eval $XTC "$(printf '%s ' "${_options[@]}" )"
     local _return_code=$?
     (( ${_return_code} != 0 )) &&
     printf '%s\n' "$XTC returned ${_return_code}" >&2
- 
+    
+}
+
+rgb_to_console_color () {
+    # $1: color index X in the PXrrggbb format
+    # $2: red
+    # $3: green
+    # $4: blue
+    local index
+    index=$(printf '%x' $1 | tr [:lower:] [:upper:])
+    printf 'P%s%s%s%s' $index $2 $3 $4
+}
+
+switch_to_color_theme_on_console () {
+
+    local color
+    local x start
+    declare -i x start
+    _regex_pattern_1='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
+    _regex_pattern_2='rgb:([0-9a-fA-F]{2})/([0-9a-fA-F]{2})/([0-9a-fA-F]{2})'
+
+    case $theme_format in
+        1)
+            start=7
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && echo -en "\e]${!color}"
+            done
+            ;;
+        2)
+            start=7
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                if [[ ${!color} =~ ${_regex_pattern_1} ]]; then
+                    _transformed_color=$(rgb_to_console_color $((x-7)) ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]})
+                elif [[ ${!color} =~ ${_regex_pattern_2} ]]; then
+                    _transformed_color=$(rgb_to_console_color $((x-7)) ${BASH_REMATCH[1]} ${BASH_REMATCH[2]} ${BASH_REMATCH[3]})
+                fi
+                echo -en "\e]${_transformed_color}"
+            done
+            ;;
+    esac    
+    clear
+    env-info
 }
 
 change_color () {
@@ -619,99 +711,93 @@ set_colors () {
     done
 }
 
-
-apply_rxvt_color_theme_on_the_fly () {
+switch_to_color_theme_on_urxvt () {
     local _color _transformed_color _option 
     local _transformed_colors _options
     declare -a _transformed_colors _options
     local _regex_pattern
     _regex_pattern='#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})'
-    _transformed_colors=()
-    _options=()
     local x
     # 16 base colors, bg and fg present depending on theme_format
     # if bg and fg not defined, default to one of the base colors - prefer dark bg
     # WARNING: bg and fg are in hash_rgb format or rgb:rr/gg/bb format
-    local _max
-    if (( theme_format==1 )); then _max=16; else _max=18; fi
-    for ((x=0; x<${_max}; x++)); do
-        if (( x<16)); then
-            _transformed_color=$(console_color_to_hash_rgb ${theme_colors[$x]})
-            _transformed_colors+=(${_transformed_color})
-        else
-            _color=${theme_colors[$x]}
-            if [[ ${_color} =~ ${_regex_pattern} ]]; then
-                _transformed_color=${_color}
-            else
-                _transformed_color=$(rgb_color_to_hash_rgb ${_color})
-            fi
-            _transformed_colors+=(${_transformed_color})
-        fi
+    local limit
+    declare -i x limit
 
-    done
-    
-    printf '%s\n' "${_transformed_colors[@]}" 
+    case $theme_format in
+        1)
+            start=7
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    _transformed_color=$(console_color_to_hash_rgb ${!color})
+                    eval ${color}=${_transformed_color}
+                }
+            done                
+            ;;
+        2)
+            start=0
+            limit=${#colors[@]}
+            for ((x=$start; x<${limit}; x++)); do
+                color=${colors[$x]}
+                [[ "${!color}" ]] && {
+                    if [[ ${!color} =~ ${_regex_pattern} ]]; then
+                        _transformed_color=${!color}
+                    else
+                        _transformed_color=$(rgb_color_to_hash_rgb ${!color})
+                    fi
+                    eval ${color}=${_transformed_color}
+                }
+            done
+            ;;
+        *)
+            die "theme format unknown"
+            ;;
+    esac
 
-    for (( x=0; x<16; x++));do
-        eval color$x=${_transformed_colors[$x]}
-    done
-    eval background=${_transformed_colors[16]}
-    eval foreground=${_transformed_colors[17]}
     set_colors
-                      
 }
 
 
-apply_color_theme_on_the_fly () {
-    # $1: color theme key
-    # $2: y/n flag to update xresources or not
-    local _key="$1"
-    local _update_xres=$2
-    if [[ "${themes["$_key"]}" != "1" ]]; then
-        error_exit "$(printf 'theme \"%s\" does not exist' "${_key}")"
+switch_to_color_theme () {
+    local _key="$theme_name"
+    [[ "${themes["$_key"]}" == "1" ]] || die "$(printf 'theme \"%s\" does not exist' "${_key}")"
+    load_color_theme "${_key}"    
+    
+    # update .Xresources if requested - even when on console and/or the theme
+    # is a console color theme
+    if [[ "true" == "$update" ]]; then
+        update_xresources
     fi
-    (( ${#theme_colors[@]} == 0 )) && load_color_theme "${_key}"    
-    if [[ $opt_x ]]; then 
+
+    case $TERM in
+        xterm*)
+            [[ "$COLORTERM" == "gnome-terminal" ]] &&
+            ( switch_to_color_theme_on_gnome_terminal ) || 
+            ( switch_to_color_theme_on_xterm )
+            ;;
         
-
-        # update .Xresources if requested
-        if [[ "y" == "$_update_xres" ]]; then
-            update_xresources
-        fi
-
-
-        case $TERM in
-            xterm*)
-                ( apply_xterm_color_theme_on_the_fly )
-                ;;
-
-            *rxvt*)
-
-                # use dynamic-colors to change the rxvt theme on the fly
-                # do it in a subshell so as to not pollute the scripts environment
-                ( apply_rxvt_color_theme_on_the_fly )
-                ;;
-            *)
-                printf 'Changing theme on the fly for terminal emulator %s is not implemented yet\n' $TERM >&2
-                return 1
-                ;;
+        *rxvt*)
             
-        esac
+            # use dynamic-colors to change the rxvt theme on the fly
+                # do it in a subshell so as to not pollute the scripts environment
+            ( switch_to_color_theme_on_urxvt )
+            ;;
 
-    else
+        *linux*)
+            # activate on the console - only if the script actually is run on a console
+            if on_console; then
+                ( switch_to_color_theme_on_console )
+            fi
+            ;;
+
+        *)
+            printf 'switching color theme for terminal emulator %s is not implemented yet\n' $TERM >&2
+            return 1
+            ;;
         
-        # activate on the console - only if on a console
-        if on_console; then
-            local _color
-            for _color in "${theme_colors[@]}"; do 
-                echo -en "\e]${_color}"
-            done
-            clear
-        else
-            error_exit "You are not on a console. Can not apply the color theme."
-        fi
-
-    fi
+    esac
 }
 
 tilde_expand () {
@@ -741,54 +827,26 @@ convert_image () {
     printf "%s\n" "$(convert "$image" -colors 16 -format "%c" histogram:info:)"
 }
 
-create_theme_using_palleter () {
-    local _image="$opt_image_path"
-    local _key="${opt_create_key}"
-
-    [[ -z "${_key}" ]] && [[ "${opt_apply_on_the_fly}" ]] && {
-                           _key="${opt_apply_on_the_fly_key}"
-                    }
-
-    [[ "${_key}" ]] || {
-        echo "Please enter the theme identifier: "
-        while read -r _key; do
-            _theme=${themes["$_key"]}
-            [[ "${_theme}" == "1" ]] && { 
-                printf 'theme %s already exists. try again\n' "${_key}"
-                continue
-            }
-            break
-        done
-        global_key="${_key}"
-    }
+create_theme_from_image () {
+    local _image="$path_to_image"
+    local _key="$theme_name"
     _theme=${themes["$_key"]}
     [[ "${_theme}" == "1" ]] && { 
         printf 'theme %s already exists\n' "${_key}"
         exit 1
     }
             
-    [[ "${opt_image_path}" ]] || {
-        echo "Please enter the path to the image to be sampled: "
-        while read -r _image; do
-            printf 'image = %s\n' "${_image}"
-            _image="$(tilde_expand "${_image}")"
-            [[ -e "${_image}" ]] || {
-                printf 'image %s does not exist. try again\n' "${_image}"
-                continue
-            }
-            break
-        done
-    }
-
     COL=("0" "8" "1" "9" "2" "A" "3" "B" "4" "C" "5" "D" "6" "E" "7" "F");
     x=0
 
     # create the new theme file
+    printf '# theme: %s - created from image %s\n' "${_key}" "${path_to_image}" >> "$THEMES_DIR"/"$_key"
+    printf '\n' >> "$THEMES_DIR"/"$_key"
 
     convert_image "${_image}" | while read -r line; do
                                     line=${line#*#}; line=${line% srgb*}
                                     [[ "$line" ]] || continue # skip empty lines
-                                    printf 'P%s%s\n' "${COL[$x]}" "$line" >> "$themes_dir"/"$_key"
+                                    printf 'P%s%s\n' "${COL[$x]}" "$line" >> "$THEMES_DIR"/"$_key"
                                     x=$((x+1))
                                 done 
     # printf 'theme %s created by sampling image %s\n' "${_key}" "${_image}"
@@ -801,10 +859,10 @@ update_xresources () {
     local _Xresources="$HOME/.Xresources"
     [[ -e ${_Xresources} ]] || {
         touch ${_Xresources}
-        (( $? != 0 )) && error_exit "can not create ${_Xresources}"
+        (( $? != 0 )) && die "can not create ${_Xresources}"
     }
     [[ -w ${_Xresources} ]] && chmod +w ${_Xresources}
-    (( $? != 0 )) && error_exit "can not write to  ${_Xresources}"
+    (( $? != 0 )) && die "can not write to  ${_Xresources}"
     # read $HOME/.Xresources into memory
     mapfile -t -n 0 XRESOURCES < <(cat ${_Xresources})
     
@@ -815,7 +873,7 @@ update_xresources () {
     declare -a COLORTHEME
     mapfile -t -n 0 COLORTHEME < <(cat ${color_theme_path})
 
-    printf '%s\n' "${COLORTHEME[@]}"
+    # printf '%s\n' "${COLORTHEME[@]}"
 
     # for every line in COLORTHEME that is not a comment line
     # search the line in XRESOURCES which is not a comment line and
@@ -838,7 +896,7 @@ update_xresources () {
     for ((i=0; i<${#XRESOURCES[@]}; i++)); do
         xres_line="${XRESOURCES[$i]}"
 
-        printf -- '--->%s\n' "${xres_line}"
+        # printf -- '--->%s\n' "${xres_line}"
 
         if [[ "${xres_line}" =~ $pattern1 ]]; then continue; fi
         if [[ "${xres_line}" =~ $pattern2 ]]; then continue; fi
@@ -854,7 +912,7 @@ update_xresources () {
                 if [[ "${theme_line}" =~ $pattern3 ]]; then
                     first_word_theme=${BASH_REMATCH}
                     
-                    printf -- '\n--> %s\n' "match"
+                    # printf -- '\n--> %s\n' "match"
                     
                     if [[ $first_word_xres == $first_word_theme ]]; then
                         XRESOURCES[$i]="! ${xres_line}"
@@ -869,7 +927,7 @@ update_xresources () {
 
     # Write the new .Xresources file to a tempfile
     local TEMPFILE=$(mktemp $HOME/tmp/console_colors.XXXXXX)
-    [[ $TEMPFILE ]] || error_exit "Could not create temp file"
+    [[ $TEMPFILE ]] || die "Could not create temp file"
 
     for xres_line in "${XRESOURCES[@]}"; do
         printf '%s\n' "$xres_line" >> ${TEMPFILE}
@@ -877,7 +935,8 @@ update_xresources () {
     # append the new color_theme
     
     # append the new xres config snippet
-    printf '%s\n' "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> ${TEMPFILE}
+
+    printf '\n%s\n' "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> ${TEMPFILE}
     printf '%s\n' "!! Added by console_colors !!" >> ${TEMPFILE}
     printf '%s\n' "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> ${TEMPFILE}
 
@@ -899,46 +958,136 @@ update_xresources () {
     printf '%s\n' "updated ${_Xresources}"
 }
 
-################################ functions for X #################################
-
-XTC="xtermcontrol"
-
-validate_arguments "$@"
-
 quickload_color_themes
 
-(( $# == 0 )) && {
-    for ident in "${!themes[@]}"; do
-        printf '%s\n' "$ident"
-    done | sort | columns --columns=4
+case "$#" in
+    0)
+        usage ;;
+    *)
+        cmd="$1"
+        shift
+        case "$cmd" in
+            s|switch)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    switch_to_color_theme "$theme_name"
+                fi
+                ;;
 
-    # printf '%s\n\n' "show all existing color themes..."
 
-    
-    # for ident in "${!themes[@]}"; do
-        
-    #     if apply_color_theme_on_the_fly "$ident" "n"; then
-    #         printf '\t%s' $ident
-    #         env-info
-    #         sleep 2
-    #     fi
-    # done
+            c|create)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    shift
+                    if (( $# == 0 )); then
+                        printf '%b\n' "\033[36mcommand \"$cmd\" requires <path_to_image_file>\033[0m"
+                        usage
+                    else
+                        path_to_image="$1"
+                        shift
+                        [[ -e "${path_to_image}" ]] || die "image file "${path_to_image}"  does not exist"
+                        create_theme_from_image
+                    fi
+                fi
+                ;;
 
-    exit 0
-}
+            e|edit)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    shift
+                    cd "$THEMES_DIR"
+                    ${EDITOR:-/usr/bin/nano} "$theme_name"
+                fi
+                ;;
 
-if [[ true == "$opt_create" ]]; then 
-    create_theme_using_palleter
-    # apply the new theme, but only if both creation
-    # and application are requested
-    if [[ "${opt_create}" ]] && [[ "${opt_apply_on_the_fly}" ]]; then 
-        apply_color_theme_on_the_fly "${opt_apply_key}" "$opt_update_xres"
-        env-info
-    fi
-elif [[ true == ${opt_apply_on_the_fly} ]]; then
-    if apply_color_theme_on_the_fly "${opt_apply_key}" "$opt_update_xres"; then
-        env-info
-    fi
-fi
+            l|list)
+                if (( ${#themes[@]} == 0 )); then
+                    die "zero themes found in ${THEMES_DIR}"
+                else
+                    for ident in "${!themes[@]}"; do
+                        printf '%s\n' "$ident"
+                    done | sort | columns --columns=4
+                    
+                    # printf '%s\n\n' "show all existing color themes..."
+                    
+                    
+                    # for ident in "${!themes[@]}"; do
+                    
+                    #     if switch_to_color_theme "$ident" "n"; then
+                    #         printf '\t%s' $ident
+                    #         env-info
+                    #         sleep 2
+                    #     fi
+                    # done
+                fi
+                ;;
+
+            u|update)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    shift
+                    update=true
+                    switch_to_color_theme
+                fi
+                ;;
+
+            r|remove)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    shift
+                    if [[ "${themes[${theme_name}]}" == 1 ]]; then
+                        rm -v "${THEMES_DIR}/${theme_name}"
+                    else
+                        die "theme does not exist"
+                    fi
+                fi
+                ;;
+
+            a|audit)
+                if (( $# == 0 )); then
+                    printf '%b\n' "\033[36mcommand \"$cmd\" requires <theme-name>\033[0m"
+                    usage
+                else
+                    theme_name="$1"
+                    color_theme_path="${THEMES_DIR}"/"$1"
+                    shift
+                    if [[ "${themes[${theme_name}]}" == 1 ]]; then
+                        load_color_theme "${theme_name}"
+                    else
+                        die "theme does not exist"
+                    fi
+                fi
+                ;;
+
+
+            h|help)
+                usage 
+                ;;
+
+            *)
+                printf '%b\n' "\033[36m\"${cmd}\" is not a valid command \033[0m"
+                usage ;;
+        esac
+esac
 
 exit 0

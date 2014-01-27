@@ -2,8 +2,23 @@
 
 set -e
 
+die() {
+    printf '%b\n' >&2 "\033[36m[E] $*\033[0m"
+    exit 1
+}
+
+warn() {
+    printf '%b\n' >&2 "\033[36m[W] $*\033[0m"
+}
+
 usage () { cat >&2 <<EOF
-Usage: zimgur <image_file_name.(png|jpg)> | xclip
+
+Usage: 
+zimgur import <image_file_name.(png|jpg)>
+or
+zimgur upload <image_file_name.(png|jpg)> | xclip
+or
+zimgur both <image_file_name.(png|jpg)> | xclip
 
 Create an image file by selecting a rectangle or single clicking to
 select a window or double clicking to select the full screen.
@@ -16,28 +31,61 @@ Ouputs BB code to publish the image on a forum.
 EOF
 exit 1
 }
-imup=/usr/local/bin/imup.py
+IMUP=/usr/local/bin/imup.py
 
-[[ "$1" ]] || usage
-image="$1"
-extension=${image##*.}
-case $extension in
-    png|jpg)
-        :;;
-    *)
+check_argument () {
+    [[ "$1" ]] || { warn "missing path-to-image argument"; usage; }
+    local image="$1"
+    local extension=${image##*.}
+    case $extension in
+        png|jpg)
+            :;;
+        *)
+            warn "file $1 has wrong extension"
+            usage
+            ;;
+    esac
+}
+
+do_import () {
+    command import -pause 1 "$1"
+    if (( $? != 0 )); then die "import $1 failed"; fi
+}
+
+do_upload () {
+    local image="$1"
+    local link_to_image=$($IMUP -i imgur "$image")
+    if (( $? != 0 )); then die "upload of $image failed"; fi
+    local thumb=${image##*.}-t.${extension}
+    command convert $image -resize 96X54 "$thumb"
+    if (( $? != 0 )); then die "creating a thumbnail of $image failed"; fi
+    local link_to_thumb=$($IMUP -i imgur "$thumb")
+    if (( $? != 0 )); then die "uploading the thumbnail image failed"; fi
+    printf '[URL=%s][IMG]%s[/IMG][/URL]' "$link_to_image" "$link_to_thumb"
+}
+
+(( $# > 0 )) || { warn "missing command"; usage; }
+command="$1"
+shift
+[[ $command =~ '-h|--help' ]] && usage
+(( $# > 0 )) || { warn "missing argument"; usage; }
+check_argument "$1"
+case $command in
+    import) 
+        printf '%s\n' "import"
+        do_import "$1"
+        ;;
+    upload) 
+        printf '%s\n' "upload"
+        do_upload "$1"
+        ;;
+    both)
+        printf '%s\n' "both"
+        do_import "$1"
+        do_upload "$1"
+        ;;
+    *) 
+        warn "unknown command: $command"
         usage
         ;;
 esac
-
-import -pause 4 "$image"
-(( $? != 0 )) && error_messsage "import $image failed"
-link_to_image=$($imup -i imgur "$image")
-(( $? != 0 )) && error_messsage "upload of $image failed"
-thumb=${image##*.}-t.${extension}
-convert $image -resize 96X54 "$thumb"
-(( $? != 0 )) && error_messsage "creating a thumbnail of $image failed"
-link_to_thumb=$($imup -i imgur "$thumb")
-(( $? != 0 )) && error_messsage "uploading the thumbnail image failed"
-printf '[URL=%s][IMG]%s[/IMG][/URL]' "$link_to_image" "$link_to_thumb"
-
-

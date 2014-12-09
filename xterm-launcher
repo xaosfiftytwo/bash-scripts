@@ -5,10 +5,9 @@ LEFT=30
 INCREMENT=30
 LOCAL_COLORTHEME_DIRECTORY=$HOME/.local/share/console-colors
 
-# array of themes: locally installed color themes
+# array of locally installed color themes
 declare -a themes
 mapfile -t -n 0 themes < <(ls -1 $LOCAL_COLORTHEME_DIRECTORY | shuf)
-echo ${themes[@]}
 
 args="$@"
 
@@ -30,7 +29,6 @@ new_instance () {
     command="/usr/bin/xterm -geometry ${DIMENSIONS}+${top}+${left}"
     options=
     if [[ "$theme" ]]; then
-	echo "$theme" >> $LOGFILE
 	options="-e 'console-colors s ${theme}"
 	if [[ "${args}" ]]; then
 	    options="-hold ${options}; ${args}'"
@@ -40,8 +38,6 @@ new_instance () {
     else
 	if [[ "$args" ]]; then
 	    options="-hold -e '${SHELL} -c ${args}'"
-	    # else
-	    # 	options=
 	fi
     fi
     eval "COLORTHEME="$theme" $command $options &"

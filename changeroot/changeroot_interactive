@@ -1,5 +1,13 @@
 #!/bin/bash
 
+# To get into an interactive shell in a chroot mount,
+# run command
+#    _ ./changeroot_interactive /dev/mapper/VG10-mint /mnt/mint
+
+
+set -x
+set -e
+
 # Arguments:
 #        $1: CHROOT_DEVICE
 #        $2: CHROOT_MOUNTPOINT
@@ -15,7 +23,7 @@
 
 debug=yes
 
-source chroot_lib
+source lib/chroot.sh
 
 CHROOT_DEVICE="$1"
 CHROOT_MOUNTPOINT="$2"
@@ -28,10 +36,7 @@ declare -a COMMANDS
 
 # Example 2:
 #     run apt-get update and apt-get dist-upgrade in a system you chroot into
-COMMANDS=( \
-    'apt-get update' \
-    'apt-get dist-upgrade' \
-    )
+COMMANDS=("strace -o strace -f -tT ping google.be")
 
 # Example 3: install the 'lvm2' package in a system you chroot into
 #     and run update-initrams
@@ -48,5 +53,5 @@ COMMANDS=( \
 
 # -----------------------------------------------------------------------
 
-do_chroot $CHROOT_DEVICE $CHROOT_MOUNTPOINT
+do_chroot_interactive  $CHROOT_DEVICE $CHROOT_MOUNTPOINT
 

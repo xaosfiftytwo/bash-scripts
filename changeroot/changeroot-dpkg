@@ -1,5 +1,8 @@
 #!/bin/bash
 
+set -x
+set -e
+
 # Arguments:
 #        $1: CHROOT_DEVICE
 #        $2: CHROOT_MOUNTPOINT
@@ -8,14 +11,14 @@
 # this script with the series of commands you want to run in the
 # chroot
 
-# e.g. chroot.sh /dev/mapper/VG10-linuxBBQ 
+# e.g. chroot.sh /dev/mapper/VG10-linuxBBQ /mnt/sid
 
 # Is it possible to run more than 1 command in one run?
 # YES! By putting the commands in a global array
 
 debug=yes
 
-source chroot_lib
+source lib/chroot.sh
 
 CHROOT_DEVICE="$1"
 CHROOT_MOUNTPOINT="$2"
@@ -25,19 +28,10 @@ declare -a COMMANDS
 
 # -----------------------------------------------------------------------
 
-# Example 1: Install grub to the MBR of your HD and run update-grub
-COMMANDS=( \
-    'grub-install /dev/sda' \
-    'update-grub' \
-    )
-
 
 # Example 2:
 #     run apt-get update and apt-get dist-upgrade in a system you chroot into
-# COMMANDS=( \
-#     'apt-get update' \
-#     'apt-get dist-upgrade' \
-#     )
+COMMANDS=("dpkg -l")
 
 # Example 3: install the 'lvm2' package in a system you chroot into
 #     and run update-initrams
@@ -54,5 +48,5 @@ COMMANDS=( \
 
 # -----------------------------------------------------------------------
 
-do_chroot C$CHROOT_DEVICE $CHROOT_MOUNTPOINT
+do_chroot $CHROOT_DEVICE $CHROOT_MOUNTPOINT
 

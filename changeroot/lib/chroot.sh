@@ -82,7 +82,7 @@ do_chroot () {
     setup "$CHROOT_MOUNTPOINT"
     
 # Attempt mount
-    mount "$CHROOT_DEVICE" "$CHROOT_MOUNTPOINT"
+    mount "$CHROOT_DEVICE" "$CHROOT_MOUNTPOINT" -osubvol=@
     # returns status 32 when already mounted
     if [[ $? != 0 && $? != 32 ]]; then
         echo "Could not mount $CHROOT_DEVICE on $CHROOT_MOUNTPOINT"

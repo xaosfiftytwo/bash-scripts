@@ -15,7 +15,7 @@
 
 debug=yes
 
-source chroot_lib
+source lib/chroot.sh
 
 CHROOT_DEVICE="$1"
 CHROOT_MOUNTPOINT="$2"

@@ -1,0 +1,177 @@
+#!/bin/bash
+
+# TODO: reirect errors to stderr
+
+set -e
+
+check4root() {
+    (( $EUID == 0 )) || {
+        printf "this script requires root privileges\n" 
+	exit 11
+    }
+}
+
+# $1: directory
+is_empty_dir() {
+    local file
+    for file in "$1"/* "$1"/.*
+    do
+	case "$file" in
+	    "$1/.*") return 0 ;;
+	    "$1/*"|"$1/."|"$1/..") continue ;;
+	    *) return 1 ;;
+	esac
+    done
+}
+
+usage() {
+    printf "$PROGRAM supports the following options\n"
+    printf "$PROGRAM [-f|-h] <subvolume>\n"
+    printf "\n"
+    printf "examples:  $PROGRAM -f @\n"
+    printf "\n"
+    exit 1
+}
+
+do_one_btrfs_backup() {
+    local subvol target current_date read_only_snapshot source current_timestamp rsync_options rsync_args timestamp_most_recent_backup rsync_link_destination full
+    subvol="$1"
+    printf -- ">>>\n"
+    printf -- "Starting backup for %s\n" $subvol
+    if [[ ! -d "${destination_mountpoint}" ]]
+    then
+        printf "$destination_mountpoint is not a directory. Bailing out...\n"
+        exit 13
+    fi
+    target="${destination_mountpoint}/${subvol}"
+    if [ ! -d "${target}" ]; then
+        printf "$target is not a directory. Trying to create it now...\n"
+        mkdir "${target}"
+        RC=$?
+        if (( ! $RC == 0 )); then
+            printf "Failed to create ${target}. Bailing out\n" 
+            exit 13
+        fi
+    fi
+
+    # if target dir is empty force a full backup
+    # no previous backups of this subvolume exist
+    if is_empty_dir "$target"; then
+        full=1
+        printf "$PROGRAM: $target is empty: forcing full backup...\n"
+    fi
+
+    # create ro snapshot of the source subvolume
+    current_date=$(date '+%Y%m%d_%H:%M:%S')
+    read_only_snapshot="${subvol}_ro_rsync.${current_date}"
+    btrfs subvolume snapshot -r "$subvol" "${read_only_snapshot}" >/dev/null 2>&1
+    (( $? > 0 )) && {
+        printf 'Could not create btrfs subvolume snapshot for %s\n' $subvol
+    }
+    
+    source="${BTRFSROOT}/${read_only_snapshot}/"
+
+    # Time stamp for the new backup. WARNING: granularity is 1 minute
+    current_timestamp=$(date "+%Y-%m-%d.%H:%M")
+    #The target directory:
+
+    declare -a rsync_args rsync_options
+    rsync_options+=( -aAxX )
+    for exclusion in \'.gvfs\' /media /mnt /proc /sys /dev /tmp /run
+    do
+        rsync_options+=( "--exclude $exclusion" )
+    done
+    target="${target}/${current_timestamp}"
+    if (( full == 0 )); then
+        # Time stamp of the last backup
+        timestamp_most_recent_backup=$(ls -1 "${target%/*}" | sort -r | head -n 1)
+        # make sure timestamp_most_recent_backup != current_timestamp
+        while [[ "$timestamp_most_recent_backup" == "$current_timestamp" ]]; do
+            sleep 60s
+            timestamp_most_recent_backup=$(ls -1 ${target%/*} | sort -r | head -n 1)
+        done
+        #The link destination directory:
+        rsync_link_destination="${target%/*}/$timestamp_most_recent_backup"
+        #The rsync options:
+        rsync_options+=("--delete" "--link-dest=$rsync_link_destination")
+    fi
+
+    rsync_args=("$source" "$target")
+    rsync ${rsync_options[@]} ${rsync_args[@]}
+    if (( ! $? == 0 )); then
+            printf "$PROGRAM: rsync returned error status...bailing out\n"
+            printf "*** Please investigate ***\n"
+            exit 15
+    else
+        printf "Backup for subvolume %s - OK\n" $subvol 
+    fi
+}
+
+get_options() {
+    full=0
+    
+    TEMP=$(getopt -o fh -- "$@") || usage
+
+    # getopt quotes arguments with ' We use eval to get rid of that
+    eval set -- $TEMP
+
+    while :
+    do
+        case "$1" in
+            -h)
+                usage
+                shift
+                ;;
+
+	    -f)
+	        full=1
+	        shift
+	        ;;
+
+	    --)
+	        shift
+	        break
+	        ;;
+
+            *) 
+	        printf "Internal error from getopt!\n"
+	        exit 1
+	        ;;
+        esac
+    done
+        
+    (( $# )) || usage
+}
+
+# Backup is normally run daily by anacron. 
+#
+main() {
+
+    # set -o nounset
+    # set -o errexit
+    # set -o pipefail
+
+    PROGRAM=${0##*/}
+
+    # trap 'e=$?; kill $!; exit $e' HUP INT TERM
+    check4root
+    get_options "$@"
+    # RC=$?
+    # [[ $RC == 0 ]] || exit $RC
+
+    cd "${BTRFSROOT}"
+
+    for subvol; do
+        do_one_btrfs_backup $subvol
+    done
+
+    exit 0
+}
+
+# Presumptions:
+# 1. The btrfs pool containing the subvolumes to backup
+#    is mounted on $BTRFSROOT
+destination_mountpoint="/media/me/rsync-backups"
+BTRFSROOT=${BTRFSROOT:-/mnt/btrfs-pool}
+cd $BTRFSROOT
+main "$@"

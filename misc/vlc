@@ -1,0 +1,63 @@
+#!/bin/bash
+
+# This script is a wrapper around /usr/bin/vlc
+# It searches for option --no-dpms in the options, sets dpms off
+# if found and launches /usr/bin/vlc without this option, but
+# with all other other options and arguments that were originally
+# passed to it.
+# At exit it sets dpms on again if it has been switched off.
+
+# Note:
+# The script does not handle launching several instances of vlc
+# concurrently. It is the users responsability to not launch
+# more than 1 vlc instance at any time with the option --no-dpms.
+  
+dpms() {
+    # $1: 
+    case "$1" in
+        on) switch=true; shift;;
+        off) switch=false; shift;;
+    esac
+    xfconf-query -c xfce4-power-manager \
+                 -p /xfce4-power-manager/dpms-enabled \
+                 -s $switch
+}
+
+# Parse options for `--no-dpms'
+# Collect all other options or arguments in array preserve_args
+opt_no_dpms=false
+declare -a preserve_args
+while test $# -gt 0; do
+    opt="$1"
+    case $opt in
+        --no-dpms)	opt_no_dpms=true
+                        shift
+			;;
+
+        -\?|-h|--help)
+            usage;;
+        *)
+            preserve_args+=("$opt")
+            shift
+            ;;
+        --)
+            break
+	    ;;
+    esac
+done
+
+# Add remaining options/arguments to preserve_args
+if test $# -gt 0; then
+    preserve_args+=("${1+$@}")
+fi
+
+
+if $opt_no_dpms; then
+    dpms off
+    trap 'dpms on' EXIT
+fi
+declare  -p preserve_args
+exec /usr/bin/vlc $(echo "${preserve_args[@]}")
+# Launch vlc with the original arguments, with option --no-dpms removed
+# (( ${#preserve_args[@]} )) &&
+#     /usr/bin/vlc "${preserve_args[@]}" || /usr/bin/vlc

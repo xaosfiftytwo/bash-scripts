@@ -52,7 +52,8 @@ set_global_variables() {
     local number_of_jobs
     # Most recent required dependencies:
     # for Debian jessie based distros
-    required_dependencies=( git scons libgtk2.0-bin libgexiv2-dev libjson-glib-dev libjson-c-dev)
+    # required_dependencies=( git scons libgtk2.0-bin libgexiv2-dev libjson-glib-dev libjson-c-dev)
+    required_dependencies=( git libgtk2.0-bin libgexiv2-dev libjson-glib-dev libjson-c-dev python-cairo-dev)
     # for Debian sid based distros
     # required_dependencies=( git scons libgtk2.0-bin libgexiv2-dev libjson-c-dev)
     optional_dependencies=( gegl libraw-dev graphviz-dev )
@@ -63,7 +64,7 @@ set_global_variables() {
     make_options="-j${number_of_jobs}"
     # set up an associative array with key = component and value = method + git repo
     declare -Ag components
-    components=( [libmypaint]="scons https://github.com/mypaint/libmypaint.git" 
+    components=( [libmypaint]="make https://github.com/mypaint/libmypaint.git" 
                  [babl]="make git://git.gnome.org/babl"
                  [gegl]="make git://git.gnome.org/gegl"
                  [gimp]="make git://git.gnome.org/gimp"
@@ -73,8 +74,8 @@ set_global_variables() {
 install_global_dependencies() {
     # Get dependencies (hopefully :) )
     sudo apt-get update &&
-    sudo apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}" &&
-    sudo apt-get build-dep -y babl gegl gimp || die
+    sudo apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}" 
+    # sudo apt-get build-dep -y babl gegl gimp || die
 }
 
 setup_environment_for_local_builds() {
@@ -132,16 +133,18 @@ build_and_install_component() {
             git "${gitargs[@]}"  || die
             
             [[ "${gitargs}" = clone ]] && { cd $component || die; }
-            case $mode in
-                "i")
-                    ./autogen.sh --prefix=$gimp_build_directory || die
-                    ;;
-                "u")
-                    ./configure --prefix=$gimp_build_directory || die
-                    ;;
-                *)
-                    die "mode \"$mode\" is not implemented"
-            esac
+            [[ -x './configure' ]] || ./autogen.sh --prefix=$PREFIX
+            ./configure --prefix=$PREFIX
+            # case $mode in
+            #     "i")
+            #         ./autogen.sh --prefix=$gimp_build_directory || die
+            #         ;;
+            #     "u")
+            #         ./configure --prefix=$gimp_build_directory || die
+            #         ;;
+            #     *)
+            #         die "mode \"$mode\" is not implemented"
+            # esac
             
             make $make_options || die
             make install || die
@@ -268,6 +271,7 @@ get_to_it() {
     return $rcc
 }
 
+PREFIX='/home/me/.gimp-build-dev'
 shopt -s nullglob
 trap finish EXIT
 get_to_it

@@ -271,7 +271,7 @@ get_to_it() {
     return $rcc
 }
 
-PREFIX='/home/me/.gimp-build-dev'
+PREFIX="$HOME/.gimp-build-dev"
 shopt -s nullglob
 trap finish EXIT
 get_to_it

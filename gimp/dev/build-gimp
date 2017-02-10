@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+#########################################################################
+#
+#   NB  Development tools and dependencies will be installed by the script if needed
+#
+########################################################################
+#
+#   [QUOTE from <http://www.gimp.org/source/howtos/gimp-git-build.html>]
+#     1.I use autoconf's config.site feature instead of setting up
+#       environment variables manually
+#     2.I install in my home directory
+#       Making use of config.site nullifies the need to manually manage
+#       environment variables, and installing in the home directory makes it
+#       easy to tinker with an installation since you don't need to
+#       be root. So, put this in $GIMP_DIR/share/config.site where $GIMP_DIR is in
+#       your home directory eg GIMP_DIR=$HOME/.gimp-dev
+#
+#   THE SCRIPT DOES:
+#   1)  export GIMP_BUILD_DIRECTORY="$HOME/.gimp-build-dev"
+#   2)  mkdir $GIMP_BUILD_DIRECTORY
+#       mkdir $GIMP_BUILD_DIRECTORY/share
+#   3)  creates $GIMP_BUILD_DIRECTORY/share/config.site
+#
+#       and adds the following:
+#
+#       export PATH="$GIMP_BUILD_DIRECTORY/bin:$PATH"
+#       export PKG_CONFIG_PATH="$GIMP_BUILD_DIRECTORY/lib/pkgconfig:$PKG_CONFIG_PATH"
+#       export LD_LIBRARY_PATH="$GIMP_BUILD_DIRECTORY/lib:$LD_LIBRARY_PATH"
+#       export ACLOCAL_FLAGS="-I $GIMP_BUILD_DIRECTORY/share/aclocal $ACLOCAL_FLAGS"
+#
+#       Now autogen will use the paths in this file, so they no longer
+#       need to be managed manually
+#
+#   4)  Build libmypaint, babl, gegl, gimp, gmic from git 
+#
+#########################################################################
+#
+set -x
+#
+#
+GIMP_BUILD_DIRECTORY="${HOME}/gimp_from_git"
+
+die() {
+  [[ "$#" -gt 0 ]] && printf >&2 '%s\n' "$@"
+  exit 1
+}
+
+set_global_variables() {
+    DEBUG=${DEBUG-1}
+    mode='i'                           # can be 'i' or 'u' (initial build vs update)
+    start_build_date=$(date +'%s')
+    local number_of_jobs
+    # Most recent required dependencies:
+    # for Debian jessie based distros
+    # required_dependencies=( git scons libgtk2.0-bin libgexiv2-dev libjson-glib-dev libjson-c-dev)
+    required_dependencies=( git libgtk2.0-bin libgexiv2-dev libjson-glib-dev libjson-c-dev python-cairo-dev)
+    # for Debian sid based distros
+    # required_dependencies=( git scons libgtk2.0-bin libgexiv2-dev libjson-c-dev)
+    optional_dependencies=( gegl libraw-dev graphviz-dev )
+    [[ -d $GIMP_BUILD_DIRECTORY ]] || {
+        mkdir $GIMP_BUILD_DIRECTORY || die 'on mkdir GIMP_BUILD_DIRECTORY'
+        }
+    # Find number of cpu cores, to multi-thread the make
+    number_of_jobs="$(($(grep '^processor' /proc/cpuinfo | wc -l)))"
+    # ((number_of_jobs > 1)) && number_of_jobs=$(( number_of_jobs - 1 ))
+    make_options="-j${number_of_jobs}"
+    # set up an associative array with key = component and value = method + git repo
+    declare -Ag components
+    components=( [libmypaint]="make https://github.com/mypaint/libmypaint.git" 
+                 [babl]="make git://git.gnome.org/babl"
+                 [gegl]="make git://git.gnome.org/gegl"
+                 [gimp]="make git://git.gnome.org/gimp"
+                 [gmic]="cmake https::/github.com/dtschump/gmic"
+               )
+}
+
+# install_global_dependencies() {
+#     # Get dependencies (hopefully :) )
+#     # sudo apt-get update &&
+#     # sudo apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}"
+#     # TODO:
+#     #   use pbuilder -> no sudo allowed
+#     #   need to configure git in the chroot for non-interactive login
+#     # apt-get update &&
+#     # apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}" 
+#     # sudo apt-get build-dep -y babl gegl gimp || die
+#     :
+# }
+
+setup_environment_for_local_builds() {
+    local rcc config_site
+    # if [[ -d "${GIMP_BUILD_DIRECTORY}" ]]
+    # then
+    #     mode='u'
+    #     [[ -d "${GIMP_BUILD_DIRECTORY}/bin" ]] && {
+    #         cp -au  "${GIMP_BUILD_DIRECTORY}/bin/*" "${GIMP_BUILD_DIRECTORY}/bin.old/" &&
+    #             rm -rf "${GIMP_BUILD_DIRECTORY}/bin" || die
+    #     }
+    #     [[ -d "${GIMP_BUILD_DIRECTORY}/lib" ]] && {
+    #         cp -au  "${GIMP_BUILD_DIRECTORY}/lib/*" "${GIMP_BUILD_DIRECTORY}/lib.old/" &&
+    #         rm -rf "${GIMP_BUILD_DIRECTORY}lib" ||  die 
+    #     }
+    # else
+    #     mkdir "${GIMP_BUILD_DIRECTORY}" || die
+    # fi
+    # [[ -d "${GIMP_BUILD_DIRECTORY}/share" ]] || {
+    #     mkdir "${GIMP_BUILD_DIRECTORY}/share" || die
+    # }
+    config_site="${GIMP_BUILD_DIRECTORY}/share/config.site"
+    if [[ -f "$config_site" ]]; then
+        export PATH="${GIMP_BUILD_DIRECTORY}/bin:$PATH"
+        export PKG_CONFIG_PATH="${GIMP_BUILD_DIRECTORY}/lib/pkgconfig:${GIMP_BUILD_DIRECTORY}/share/pkgconfig"
+    else
+        mkdir -p $(dirname ${config_site}) 2>/dev/null
+        touch "$config_site" || die
+        {
+            echo 'export PATH="${GIMP_BUILD_DIRECTORY}/bin:$PATH"' > "$config_site"
+            echo 'export PKG_CONFIG_PATH="${GIMP_BUILD_DIRECTORY}/lib/pkgconfig:$PKG_CONFIG_PATH"' >> "$config_site"
+            echo 'export LD_LIBRARY_PATH="${GIMP_BUILD_DIRECTORY}/lib:$LD_LIBRARY_PATH"' >> "$config_site" 
+            echo 'export ACLOCAL_FLAGS="-I ${GIMP_BUILD_DIRECTORY}/share/aclocal $ACLOCAL_FLAGS"' >> "$config_site"
+        } || die
+    fi
+}
+
+# Build_and_install components from git
+build_and_install_component() {
+    local component temp method repo local_repo component_build_directory
+    component="$1"
+    temp="${components[${component}]}"
+    method="${temp%% *}"
+    repo="${temp##* }"
+    local_repo="${HOME}/git/${component}"
+    component_build_directory=${GIMP_BUILD_DIRECTORY}/${component}
+    mkdir ${component_build_directory} 2>/dev/null || :
+    cd $component_build_directory || { printf 'Could not cd into %s\n' $GIMP_BUILD_DIRECTORY; return 1; }
+    case "$component" in
+
+        libmypaint|babl|gegl|gimp )
+            
+            [[ -x ${local_repo}/configure ]] || ${local_repo}/autogen.sh --prefix=${GIMP_BUILD_DIRECTORY}
+            case $component in
+                # "libmypaint" )
+                #     # See http://www.gimpusers.com/forums/gimp-developer/17992-gegl-builds-fail
+                #     # ./configure --without-libavformat --prefix=$PREFIX
+                #     ;;
+                * )
+                   ${local_repo}/configure --prefix=${GIMP_BUILD_DIRECTORY}
+                    ;;
+            esac
+            
+            make $make_options || die
+            make install || die
+            ;;
+        
+        gmic )
+            cd ./build 2>/dev/null || {
+                mkdir  ./build
+                cd ./build
+            }
+            # cmake --trace-expand ../ || die 'on cmake --trace-expand'
+            cmake $HOME/git/xaosfiftytwo/gmic/ || die 'on cmake'
+            # for VERBOSE make, uncomment the next line and comment the next plus one
+            # make VERBOSE=1   || die 'on make'
+            make || die 'on make'
+            cp -v gmic_gimp ~/.config/GIMP/2.9/plug-ins/ || die 'on cp gmic_gimp to gimp 2.9 plug-ins directory'
+            ;;
+
+        *)
+            die 'unknown build and install method "%s"\n' "$method"
+            ;;
+    esac
+}
+
+build_and_install_local_components() {
+    # build and install components
+    local component
+    for component in "${components_to_build[@]}"
+    do
+        printf '>Building component %s\n' "$component"
+        if ! build_and_install_component $component
+        then
+            die 'failed to build component %s\n' $component
+        fi
+    done
+}
+
+finish() {
+    local rc
+    rc=$?
+    (( DEBUG )) && printf 'entered finish ...\n'
+    exit $rc
+}
+
+get_to_it() {
+    local rc rcc=0
+
+    set_global_variables
+    rc=$?
+    (( ! rc == 0 )) && {
+        rcc=$((rcc+1))
+        printf 'WARNING: %s returned %d\n' "set_global_variables" $rc
+    }
+    # install_global_dependencies
+    # rc=$?
+    # (( ! rc == 0 )) && {
+    #     rcc=$((rcc+1))
+    #     printf 'WARNING: %s returned %d\n' "install_global_dependencies" $rc
+    # }
+    setup_environment_for_local_builds
+    rc=$?
+    (( ! rc == 0 )) && {
+        rcc=$((rcc+1))
+        printf 'WARNING: %s returned %d\n' "setup_environment_for_local_builds" $rc
+    }
+    build_and_install_local_components
+    rc=$?
+    (( ! rc == 0 )) && {
+        rcc=$((rcc+1))
+        printf 'WARNING: %s returned %d\n' "build_and_install_local_components" $rc
+    }
+
+# ###------------------------------------------------------
+# ## If you add a menu item "INSTALL GIMP-dev", then uncomment below
+# ## to update menu.xml:
+
+# #f="$HOME/.config/openbox/menu.xml"
+
+# #sed -i 's|INSTALL GIMP|GIMP-2.9|g' "$f"
+# #sed -i 's|x-terminal-emulator -e gimp-build|~/.gimp-dev/bin/gimp-2.9|g' "$f"
+
+# #openbox --reconfigure
+
+    return $rcc
+}
+
+shopt -s nullglob
+trap finish EXIT
+
+# Which components does user want to rebuild?
+declare -ag components_to_build=("$@")
+if [[ ${#components_to_build[$@]} -eq 0 ]]; then
+    components_to_build=(libmypaint babl gegl gimp gmic)
+fi
+
+get_to_it

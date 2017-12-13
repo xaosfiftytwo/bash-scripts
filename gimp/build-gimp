@@ -35,10 +35,7 @@
 #
 #########################################################################
 #
-set -x
-#
-#
-GIMP_BUILD_DIRECTORY="${HOME}/gimp_from_git"
+GIMP_BUILD_DIRECTORY="${HOME}/gimp_build_from_git/gimp"
 
 die() {
   [[ "$#" -gt 0 ]] && printf >&2 '%s\n' "$@"
@@ -70,42 +67,12 @@ set_global_variables() {
                  [babl]="make git://git.gnome.org/babl"
                  [gegl]="make git://git.gnome.org/gegl"
                  [gimp]="make git://git.gnome.org/gimp"
-                 [gmic]="cmake https::/github.com/dtschump/gmic"
+                 [gmic]="cmake https://github.com/dtschump/gmic"
                )
 }
 
-# install_global_dependencies() {
-#     # Get dependencies (hopefully :) )
-#     # sudo apt-get update &&
-#     # sudo apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}"
-#     # TODO:
-#     #   use pbuilder -> no sudo allowed
-#     #   need to configure git in the chroot for non-interactive login
-#     # apt-get update &&
-#     # apt-get install --yes --no-install-recommends "${required_dependencies[@]}" "${optional_dependencies[@]}" 
-#     # sudo apt-get build-dep -y babl gegl gimp || die
-#     :
-# }
-
 setup_environment_for_local_builds() {
     local rcc config_site
-    # if [[ -d "${GIMP_BUILD_DIRECTORY}" ]]
-    # then
-    #     mode='u'
-    #     [[ -d "${GIMP_BUILD_DIRECTORY}/bin" ]] && {
-    #         cp -au  "${GIMP_BUILD_DIRECTORY}/bin/*" "${GIMP_BUILD_DIRECTORY}/bin.old/" &&
-    #             rm -rf "${GIMP_BUILD_DIRECTORY}/bin" || die
-    #     }
-    #     [[ -d "${GIMP_BUILD_DIRECTORY}/lib" ]] && {
-    #         cp -au  "${GIMP_BUILD_DIRECTORY}/lib/*" "${GIMP_BUILD_DIRECTORY}/lib.old/" &&
-    #         rm -rf "${GIMP_BUILD_DIRECTORY}lib" ||  die 
-    #     }
-    # else
-    #     mkdir "${GIMP_BUILD_DIRECTORY}" || die
-    # fi
-    # [[ -d "${GIMP_BUILD_DIRECTORY}/share" ]] || {
-    #     mkdir "${GIMP_BUILD_DIRECTORY}/share" || die
-    # }
     config_site="${GIMP_BUILD_DIRECTORY}/share/config.site"
     if [[ -f "$config_site" ]]; then
         export PATH="${GIMP_BUILD_DIRECTORY}/bin:$PATH"
@@ -131,38 +98,43 @@ build_and_install_component() {
     repo="${temp##* }"
     local_repo="${HOME}/git/${component}"
     component_build_directory=${GIMP_BUILD_DIRECTORY}/${component}
+    rm -rf ${component_build_directory} 2>/dev/null || :
     mkdir ${component_build_directory} 2>/dev/null || :
     cd $component_build_directory || { printf 'Could not cd into %s\n' $GIMP_BUILD_DIRECTORY; return 1; }
     case "$component" in
 
         libmypaint|babl|gegl|gimp )
             
-            [[ -x ${local_repo}/configure ]] || ${local_repo}/autogen.sh --prefix=${GIMP_BUILD_DIRECTORY}
             case $component in
-                # "libmypaint" )
-                #     # See http://www.gimpusers.com/forums/gimp-developer/17992-gegl-builds-fail
-                #     # ./configure --without-libavformat --prefix=$PREFIX
-                #     ;;
-                * )
-                   ${local_repo}/configure --prefix=${GIMP_BUILD_DIRECTORY}
+                "libmypaint" )
+                    bash -x ${local_repo}/autogen.sh --prefix=${GIMP_BUILD_DIRECTORY}
+                    ${local_repo}/configure --prefix=${GIMP_BUILD_DIRECTORY}
                     ;;
-            esac
+                * )
+                    # make distclean
+                    bash -x ${local_repo}/autogen.sh --prefix=${GIMP_BUILD_DIRECTORY}
+                    ;;
+                    
+                # * )
+                #    ${local_repo}/configure --prefix=${GIMP_BUILD_DIRECTORY}
+                    # ;;
+             esac
             
-            make $make_options || die
+            VERBOSE=1 make $make_options || die
             make install || die
             ;;
         
         gmic )
-            cd ./build 2>/dev/null || {
-                mkdir  ./build
-                cd ./build
-            }
-            # cmake --trace-expand ../ || die 'on cmake --trace-expand'
-            cmake $HOME/git/xaosfiftytwo/gmic/ || die 'on cmake'
-            # for VERBOSE make, uncomment the next line and comment the next plus one
-            # make VERBOSE=1   || die 'on make'
-            make || die 'on make'
-            cp -v gmic_gimp ~/.config/GIMP/2.9/plug-ins/ || die 'on cp gmic_gimp to gimp 2.9 plug-ins directory'
+            cd $HOME/git
+            make -C gmic/src CImg.h gmic_stdlib.h
+            cd gmic-qt
+            rm -rf build
+            mkdir build
+            cd build
+            # cmake $HOME/git/gmic-qt -DCMAKE_BUILD_TYPE=Debug || die 'on cmake'
+            cmake .. || die 'on cmake'
+            VERBOSE=1 make |& tee make.log || die 'on make'
+            cp -v gmic_gimp_qt $HOME/.config/GIMP/2.9/plug-ins/ || die 'on cp gmic_gimp_qt to gimp 2.9 plug-ins directory'
             ;;
 
         *)
@@ -200,12 +172,6 @@ get_to_it() {
         rcc=$((rcc+1))
         printf 'WARNING: %s returned %d\n' "set_global_variables" $rc
     }
-    # install_global_dependencies
-    # rc=$?
-    # (( ! rc == 0 )) && {
-    #     rcc=$((rcc+1))
-    #     printf 'WARNING: %s returned %d\n' "install_global_dependencies" $rc
-    # }
     setup_environment_for_local_builds
     rc=$?
     (( ! rc == 0 )) && {
@@ -218,17 +184,6 @@ get_to_it() {
         rcc=$((rcc+1))
         printf 'WARNING: %s returned %d\n' "build_and_install_local_components" $rc
     }
-
-# ###------------------------------------------------------
-# ## If you add a menu item "INSTALL GIMP-dev", then uncomment below
-# ## to update menu.xml:
-
-# #f="$HOME/.config/openbox/menu.xml"
-
-# #sed -i 's|INSTALL GIMP|GIMP-2.9|g' "$f"
-# #sed -i 's|x-terminal-emulator -e gimp-build|~/.gimp-dev/bin/gimp-2.9|g' "$f"
-
-# #openbox --reconfigure
 
     return $rcc
 }
